@@ -1,0 +1,374 @@
+// =============================================================================
+// KODY OMS — Prisma Schema
+// =============================================================================
+// 5 business domains: Account, Product, Order, Payment, Shipment
+// + User (auth) + AuditLog (tracking)
+//
+// Enum mapping (Frontend Korean → Prisma English):
+//   OrderStatus:        주문대기→PENDING, 주문완료→CONFIRMED, 주문중지→SUSPENDED
+//   ShipmentStatus:     출고대기→PENDING, 출고완료→COMPLETED
+//   ShipmentItemStatus: 미출고→NOT_SHIPPED, 출고대기→PENDING, 출고완료→COMPLETED
+//   ProductCategory:    앨범→ALBUM, 포토카드→PHOTOCARD, 굿즈→GOODS
+//   DepositSource:      농협외환→NONGHYUP, 하나외환→HANA, Paypal→PAYPAL, Payoneer→PAYONEER
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums (10)
+// =============================================================================
+
+enum Currency {
+  KRW
+  USD
+  EUR
+  RUB
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SUSPENDED
+}
+
+enum ShipmentStatus {
+  PENDING
+  COMPLETED
+}
+
+enum ShipmentItemStatus {
+  NOT_SHIPPED
+  PENDING
+  COMPLETED
+}
+
+enum ProductCategory {
+  ALBUM
+  PHOTOCARD
+  GOODS
+}
+
+enum Incoterm {
+  EXW
+  FOB
+  CIF
+  DDP
+  DAP
+}
+
+enum DepositSource {
+  NONGHYUP
+  HANA
+  PAYPAL
+  PAYONEER
+}
+
+enum PaymentType {
+  DEPOSIT
+  WITHDRAWAL
+  ADJUSTMENT
+}
+
+enum StockMovementType {
+  INBOUND
+  OUTBOUND
+  ADJUSTMENT
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+// =============================================================================
+// User
+// =============================================================================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  salesAccounts Account[]      @relation("SalesRep")
+  salesOrders   Order[]        @relation("OrderSalesRep")
+  stockMovements StockMovement[]
+  auditLogs     AuditLog[]
+}
+
+// =============================================================================
+// Account Domain (3 models)
+// =============================================================================
+
+model Account {
+  id                  String        @id @default(cuid())
+  name                String
+  representative      String
+  primaryDepositor    String
+  salesRepId          String
+  defaultDiscountRate Float         @default(0)
+  depositSource       DepositSource
+  memo                String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  // Relations
+  salesRep            User              @relation("SalesRep", fields: [salesRepId], references: [id])
+  shippingAddresses   ShippingAddress[]
+  relationsAsSource   AccountRelation[] @relation("AccountSource")
+  relationsAsTarget   AccountRelation[] @relation("AccountTarget")
+  orders              Order[]
+  payments            Payment[]
+  shipments           Shipment[]
+
+  @@index([salesRepId])
+}
+
+model AccountRelation {
+  id               String   @id @default(cuid())
+  accountId        String
+  relatedAccountId String
+  createdAt        DateTime @default(now())
+
+  // Relations
+  account        Account @relation("AccountSource", fields: [accountId], references: [id])
+  relatedAccount Account @relation("AccountTarget", fields: [relatedAccountId], references: [id])
+
+  @@unique([accountId, relatedAccountId])
+}
+
+model ShippingAddress {
+  id              String    @id @default(cuid())
+  accountId       String
+  label           String
+  country         String
+  fullAddress     String
+  isPrimary       Boolean   @default(false)
+  defaultIncoterm Incoterm?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  account   Account    @relation(fields: [accountId], references: [id])
+  shipments Shipment[]
+
+  @@index([accountId])
+}
+
+// =============================================================================
+// Product Domain (3 models)
+// =============================================================================
+
+model Artist {
+  id          String   @id @default(cuid())
+  name        String
+  memberCount Int
+  createdAt   DateTime @default(now())
+
+  // Relations
+  products Product[]
+}
+
+/// Product ID follows business format: P-ARTIST-NNN
+model Product {
+  id          String          @id // Business ID: P-ARTIST-NNN
+  artistId    String
+  category    ProductCategory
+  name        String
+  weightG     Int
+  priceKRW    Int
+  stockOnHand Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  // Relations
+  artist         Artist          @relation(fields: [artistId], references: [id])
+  stockMovements StockMovement[]
+  orderItems     OrderItem[]
+  shipmentItems  ShipmentItem[]
+
+  @@index([artistId])
+}
+
+model StockMovement {
+  id          String            @id @default(cuid())
+  productId   String
+  type        StockMovementType
+  quantity    Int
+  reason      String?
+  createdById String?
+  createdAt   DateTime          @default(now())
+
+  // Relations
+  product   Product @relation(fields: [productId], references: [id])
+  createdBy User?   @relation(fields: [createdById], references: [id])
+
+  @@index([productId])
+}
+
+// =============================================================================
+// Order Domain (3 models)
+// =============================================================================
+
+/// Order ID follows business format: YYMMDDNNN0000
+model Order {
+  id             String      @id // Business order number: YYMMDDNNN0000
+  orderDate      DateTime
+  accountId      String
+  salesRepId     String
+  currency       Currency
+  status         OrderStatus @default(PENDING)
+  shippingFee    Decimal     @default(0) @db.Decimal(15, 2)
+  remittanceFee  Decimal     @default(0) @db.Decimal(15, 2)
+  memo           String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  // Relations
+  account  Account     @relation(fields: [accountId], references: [id])
+  salesRep User        @relation("OrderSalesRep", fields: [salesRepId], references: [id])
+  items    OrderItem[]
+
+  @@index([accountId])
+  @@index([salesRepId])
+  @@index([orderDate])
+}
+
+/// OrderItem ID follows business format: YYMMDDNNNXXXX
+model OrderItem {
+  id             String             @id // Business item number: YYMMDDNNNXXXX
+  orderId        String
+  productId      String
+  unitPrice      Decimal            @db.Decimal(15, 2)
+  quantity       Int
+  discountRate   Decimal            @default(0) @db.Decimal(5, 4)
+  subtotal       Decimal            @db.Decimal(15, 2)
+  shipmentStatus ShipmentItemStatus @default(NOT_SHIPPED)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  // Relations
+  order         Order          @relation(fields: [orderId], references: [id])
+  product       Product        @relation(fields: [productId], references: [id])
+  shipmentItems ShipmentItem[]
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+/// Sequence table for generating daily order numbers
+model OrderSequence {
+  id      Int    @id @default(autoincrement())
+  date    String @unique // YYMMDD
+  lastSeq Int    @default(0)
+}
+
+// =============================================================================
+// Payment Domain (2 models)
+// =============================================================================
+
+model Payment {
+  id            String        @id @default(cuid())
+  date          DateTime
+  accountId     String
+  depositSource DepositSource
+  currency      Currency
+  amount        Decimal       @db.Decimal(15, 2)
+  krwEquivalent Decimal       @db.Decimal(15, 2)
+  type          PaymentType   @default(DEPOSIT)
+  memo          String?
+  createdAt     DateTime      @default(now())
+
+  // Relations
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@index([accountId])
+  @@index([date])
+}
+
+model FxRate {
+  id       String   @id @default(cuid())
+  date     DateTime
+  currency Currency
+  rateToKRW Decimal @db.Decimal(15, 4)
+  createdAt DateTime @default(now())
+
+  @@unique([date, currency])
+}
+
+// =============================================================================
+// Shipment Domain (2 models)
+// =============================================================================
+
+/// Shipment ID follows business format: SHIP-YYMMDD-NN
+model Shipment {
+  id                String         @id // Business ID: SHIP-YYMMDD-NN
+  accountId         String
+  shippingAddressId String
+  shipDate          DateTime?
+  incoterm          Incoterm
+  undervalueFile    String?
+  trackingNumber    String?
+  status            ShipmentStatus @default(PENDING)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  // Relations
+  account         Account         @relation(fields: [accountId], references: [id])
+  shippingAddress ShippingAddress  @relation(fields: [shippingAddressId], references: [id])
+  items           ShipmentItem[]
+
+  @@index([accountId])
+  @@index([shippingAddressId])
+}
+
+model ShipmentItem {
+  id          String  @id @default(cuid())
+  shipmentId  String
+  orderItemId String
+  productId   String
+  quantity    Int
+  hsCode      String?
+  htsCode     String?
+  subtotal    Decimal @db.Decimal(15, 2)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  shipment  Shipment  @relation(fields: [shipmentId], references: [id])
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id])
+
+  @@index([shipmentId])
+  @@index([orderItemId])
+}
+
+// =============================================================================
+// AuditLog
+// =============================================================================
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  action     AuditAction
+  entityType String
+  entityId   String
+  userId     String?
+  payload    Json?
+  createdAt  DateTime    @default(now())
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+}
