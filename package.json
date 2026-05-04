@@ -1,5 +1,5 @@
 {
-  "name": "kody-oms-backend",
+  "name": "kody-back",
   "version": "0.1.0",
   "description": "KODY OMS Backend — Fastify + Prisma + DDD",
   "private": true,
