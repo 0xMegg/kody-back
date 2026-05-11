@@ -734,3 +734,42 @@ Next:
 
 - Run `plan` for `S7` Profile API closeout hardening under root macro-slice `Slice C`.
 - Direct S7 prerequisites: `S3` and `S4` are complete; S5b is not a hard prerequisite because the approved M0 ActionLog list has no profile/password-change action.
+
+## 2026-05-11 — S7 Profile API Closeout
+
+Workflow:
+
+- User authorized Hermes/Codex to continue the Phase 1/M0 sequence autonomously through `F1`, while preserving gates.
+- Opus/Claude produced the S7 plan at root `.hermes/plans/2026-05-11_223301-s7-profile-api-closeout-hardening.md`.
+- Opus/Claude was the primary develop implementer for the S7 test-only hardening in this backend repo.
+- Codex/Hermes performed closeout review, verification, scope assessment, and handoff updates.
+
+Accepted result:
+
+- S7 Profile API is complete.
+- Profile route coverage now asserts unauthenticated rejection for `GET /profile` and `POST /profile/password`, complementing the existing `PATCH /profile` auth coverage.
+- Profile update validation coverage now includes non-object bodies, non-string `displayName`, invalid `profileImageUrl`, whitespace-only `displayName`, no-op updates, display-name-only updates, and profile-image-only updates.
+- Password-change route coverage now includes missing `currentPassword`, missing `newPassword`, wrong current password, weak new password, and success.
+- Suspended actors are rejected before self profile update or password change.
+- Profile/password writes intentionally do not call `prisma.actionLog.create` because the approved M0 `ActionType` list has no profile/password-change action; no new `ActionType` was introduced.
+
+Verification:
+
+- `npx vitest run tests/profile-routes.test.ts` passed: 1 file, 19 tests.
+- `npm test` passed: 9 files, 108 tests.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Backend `git diff --check` passed.
+- Root `git diff --check` passed.
+
+Scope held:
+
+- S7 develop stayed backend test-only in `tests/profile-routes.test.ts`.
+- No route/service source edit was required for S7.
+- No Prisma schema/migration edit, Prisma write command, `_prisma_migrations` mutation, env edit, dependency/lockfile edit, generated output, new endpoint, new field, new error code, API contract expansion, frontend edit, signup/invite, password reset, logs API, product route protection, refresh-token rotation, or product/account foundation work.
+- Phase 0 promotion P3 follow-ups remain deferred/gated to `F1`: frontend auth mock placeholder defaults and dead frontend API/proxy infrastructure.
+
+Next:
+
+- Return to root and run `plan` for `S8` Invite and Signup API under root macro-slice `Slice C`.
+- S8 may require scoped API contract expansion; Prisma schema/migration, dependency, env, and lockfile changes remain gated unless explicitly approved by the S8 plan.

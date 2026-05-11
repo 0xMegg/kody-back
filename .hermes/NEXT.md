@@ -3,22 +3,21 @@
 Current mode: backend Hermes active.
 
 Next action:
-- Return to root and run `plan` for `S7` Profile API closeout hardening.
-- Latest closeout completed `S6` Admin User API closeout hardening under root macro-slice `Slice C`.
+- Return to root and run `plan` for `S8` Invite and Signup API.
+- Latest closeout completed `S7` Profile API closeout hardening under root macro-slice `Slice C`.
 
-S6 closeout result:
-- S6 Admin User API is complete.
-- Admin list/detail/status/role/unlock route coverage is verified in `tests/admin-users-routes.test.ts`.
-- Detail response body shape and read-only no-log behavior are asserted.
-- Unknown detail route returns `USER_NOT_FOUND`.
-- ADMIN and FINANCE allow behavior is explicit across admin write surfaces.
-- Operational roles are forbidden for status, role replacement, and unlock.
-- Suspended elevated actor route-level rejection is covered before update/log.
-- ActionLog matrix is explicit: real status changes write `USER_STATUS_CHANGE`; status no-ops are not logged; real role changes write `USER_ROLE_CHANGE`; role no-op and reorder no-op are not logged; read-only list/detail and unlock are not logged under the current approved M0 action list.
+S7 closeout result:
+- S7 Profile API is complete.
+- Profile read/update/password-change route coverage is verified in `tests/profile-routes.test.ts`.
+- `GET /profile`, `PATCH /profile`, and `POST /profile/password` all have explicit unauthenticated rejection coverage.
+- Profile update validation covers non-object bodies, invalid `displayName`, invalid `profileImageUrl`, whitespace-only `displayName`, no-op payloads, display-name-only updates, and profile-image-only updates.
+- Password change validation covers missing `currentPassword`, missing `newPassword`, wrong current password, weak new password, and successful password change.
+- Suspended actors are rejected before self profile update or password change.
+- Profile/password writes intentionally do not call `ActionLog` because the approved M0 `ActionType` list has no profile/password-change action.
 
 Verification:
-- `npx vitest run tests/admin-users-routes.test.ts` passed with 19 tests.
-- `npm test` passed with 97 tests.
+- `npx vitest run tests/profile-routes.test.ts` passed with 19 tests.
+- `npm test` passed with 108 tests across 9 files.
 - `npm run lint` passed.
 - `npm run build` passed.
 - Backend `git diff --check` passed.
@@ -26,8 +25,8 @@ Verification:
 
 Current backend progress:
 - Current backend M0 work includes schema/migration, auth service, auth session routes, reusable RBAC guard, shared ActionLog writer, profile routes, and admin user management routes with tests passing.
-- S1, S2, S3, S4, S5a, S5b, and S6 are complete.
-- S7 remains partial. S8, S9, and S10 remain not started.
+- S1, S2, S3, S4, S5a, S5b, S6, and S7 are complete.
+- S8, S9, and S10 remain not started.
 
 Workflow reminders:
 - Opus/Claude remains primary for backend `plan` and `develop`; Codex/Hermes invokes Claude, checks, records blockers, and owns closeout.
@@ -36,4 +35,4 @@ Workflow reminders:
 
 Open gates:
 - Prisma write commands (`migrate dev`, `migrate deploy`, `migrate resolve`, `db push`), Prisma schema/migration edits, `_prisma_migrations` mutation, env, lockfile, dependency, generated output, or API contract changes require explicit approval.
-- Further API contract expansion, signup/invite, password reset, product route protection, and refresh-token rotation require a new plan/gate.
+- S8 signup/invite, S9 password reset, S10 logs API, product route protection, and refresh-token rotation require their own plan/gate.

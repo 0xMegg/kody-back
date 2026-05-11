@@ -232,6 +232,281 @@ describe('profile routes', () => {
 
     await server.close();
   });
+
+  it('rejects GET /profile without bearer auth', async () => {
+    const server = buildTestServer();
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/profile',
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(401);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('AUTHENTICATION_ERROR');
+
+    await server.close();
+  });
+
+  it('rejects POST /profile/password without bearer auth', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/profile/password',
+      payload: {
+        currentPassword: 'Password123',
+        newPassword: 'NewPassword123',
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(401);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('AUTHENTICATION_ERROR');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects PATCH /profile with non-object body', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: ['not-an-object'],
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects PATCH /profile when displayName is not a string', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: { displayName: 123 },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects PATCH /profile when profileImageUrl is not string or null', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: { profileImageUrl: 123 },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects PATCH /profile when displayName is empty after trim', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: { displayName: '   ' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('INVALID_DISPLAY_NAME');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('updates only displayName when profileImageUrl is omitted', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: { displayName: 'Only Name' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.displayName).toBe('Only Name');
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: user.id },
+      data: { displayName: 'Only Name' },
+    });
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('updates only profileImageUrl when displayName is omitted', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: { profileImageUrl: 'https://example.com/a.png' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: user.id },
+      data: { profileImageUrl: 'https://example.com/a.png' },
+    });
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects POST /profile/password when currentPassword is missing', async () => {
+    const user = await buildUser();
+    const prisma = buildPrisma(user);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/profile/password',
+      headers: {
+        authorization: `Bearer ${issueToken(user.id)}`,
+      },
+      payload: { newPassword: 'NewPassword123' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects PATCH /profile from a suspended actor before any update', async () => {
+    const suspended = { ...(await buildUser()), status: 'SUSPENDED' };
+    const prisma = buildPrisma(suspended);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: '/profile',
+      headers: {
+        authorization: `Bearer ${issueToken(suspended.id)}`,
+      },
+      payload: { displayName: 'New Name' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('USER_INACTIVE');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects POST /profile/password from a suspended actor before any update', async () => {
+    const suspended = { ...(await buildUser()), status: 'SUSPENDED' };
+    const prisma = buildPrisma(suspended);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/profile/password',
+      headers: {
+        authorization: `Bearer ${issueToken(suspended.id)}`,
+      },
+      payload: {
+        currentPassword: 'Password123',
+        newPassword: 'NewPassword123',
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('USER_INACTIVE');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
 });
 
 async function buildUser() {
