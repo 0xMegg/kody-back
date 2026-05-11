@@ -853,3 +853,42 @@ Scope held:
 Next:
 
 - Continue autonomous Phase 1/M0 sequence by running `plan` for `S10` Logs API under macro-slice `Slice C`.
+
+## 2026-05-12 — S10 Logs API Closeout
+
+Workflow:
+
+- User requested continuing through `F1`; S10 was implemented first as the remaining backend dependency.
+- Opus/Claude was primary for backend develop in `kody-backend/`; the first print-mode run reached max turns without changes, the second reached max turns after producing the implementation and tests.
+- Standalone `codex` CLI was not installed in this environment, so Codex/Hermes closeout was performed with Hermes orchestration plus an independent delegate review.
+
+Accepted result:
+
+- S10 Logs API is complete for the current M0 backend surface.
+- Added `ActionLogQueryService` around existing `ActionLog` rows; no schema/migration or `ActionType` change was needed.
+- Added authenticated `GET /logs` using `requirePermission({ resource: 'logs', action: 'read' })`.
+- Query contract supports `page`, `pageSize`, `actorUserId`, `actionType`, `targetType`, and `targetId`; default pagination is page 1/pageSize 20 and pageSize is capped at 100.
+- ADMIN/FINANCE read all matching logs.
+- Non-admin users read own logs plus mapped target record logs where their roles have read permission.
+- M0 target mapping covers user-admin, account, productInventory, payment, order, and shipment target types; unknown targets remain admin/finance-only unless constrained to the actor's own logs.
+- Response uses the existing success/error envelope and serializes `createdAt` as ISO JSON.
+
+Verification:
+
+- `npx vitest run tests/logs-routes.test.ts` passed: 1 file, 18 tests.
+- `npm test` passed: 15 files, 221 tests.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Backend `git diff --check` passed.
+- Root `git diff --check` passed.
+- Independent review returned PASS with no blockers.
+
+Scope held:
+
+- Product implementation stayed in `kody-backend/`.
+- No Prisma schema/migration edit, Prisma write command, `_prisma_migrations` mutation, env edit, dependency/lockfile edit, generated output, frontend edit, extra endpoint, new error code, ActionType change, or ActionLog write call site was added.
+
+Next:
+
+- Continue autonomous Phase 1/M0 sequence with `F1` Frontend M0 Shell and CP#2 demo readiness in `kody-frontend/`.
+- F1 must explicitly classify each route as `mock-only`, `contract-first`, or `real binding` and verify route visibility behavior.
