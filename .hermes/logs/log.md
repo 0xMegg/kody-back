@@ -695,3 +695,42 @@ Scope held:
 Next:
 
 - Run `plan` for `S6` Admin User API closeout hardening under root macro-slice `Slice C`.
+## 2026-05-11 — S6 Admin User API Closeout
+
+Workflow:
+
+- User requested `closeout S6` after Opus/Claude completed the approved S6 develop in `kody-backend/`.
+- Opus/Claude was the primary develop implementer for the S6 test-only hardening.
+- Codex/Hermes performed closeout review, verification, scope assessment, and handoff updates.
+
+Accepted result:
+
+- S6 Admin User API is complete.
+- Admin user list/detail/status/role/unlock routes are covered at route level.
+- Detail route now asserts success body shape (`ok`, `data.id`, `data.email`, `roles`, and employee summary) and confirms read-only no-log behavior.
+- Unknown detail route returns the existing `USER_NOT_FOUND` surface.
+- ADMIN and FINANCE allow behavior is explicit across admin write surfaces: status update, role replacement, and unlock.
+- Operational roles are forbidden for status, role replacement, and unlock.
+- Suspended elevated actor route-level rejection is covered before update/log.
+- ActionLog matrix is explicit: real status changes write `USER_STATUS_CHANGE`; status no-ops are not logged; real role changes write `USER_ROLE_CHANGE`; role no-op and reorder no-op are not logged; read-only list/detail and unlock are not logged under the current approved M0 action list.
+
+Verification:
+
+- `npx vitest run tests/admin-users-routes.test.ts` passed: 1 file, 19 tests.
+- `npm test` passed: 9 files, 97 tests.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Backend `git diff --check` passed.
+- Root `git diff --check` passed.
+
+Scope held:
+
+- S6 develop stayed backend test-only in `tests/admin-users-routes.test.ts`.
+- No route/service source edit was required for S6.
+- No Prisma schema/migration edit, Prisma write command, `_prisma_migrations` mutation, env edit, dependency/lockfile edit, generated output, new endpoint, new field, new error code, API contract expansion, frontend edit, signup/invite, password reset, logs API, product route protection, refresh-token rotation, or product/account foundation work.
+- Phase 0 promotion P3 follow-ups remain deferred/gated to `F1`: frontend auth mock placeholder defaults and dead frontend API/proxy infrastructure.
+
+Next:
+
+- Run `plan` for `S7` Profile API closeout hardening under root macro-slice `Slice C`.
+- Direct S7 prerequisites: `S3` and `S4` are complete; S5b is not a hard prerequisite because the approved M0 ActionLog list has no profile/password-change action.
