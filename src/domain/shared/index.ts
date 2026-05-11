@@ -10,7 +10,10 @@ export type {
   DepositSource,
   PaymentType,
   StockMovementType,
-  AuditAction,
+  EmployeeStatus,
+  UserStatus,
+  Role,
+  ActionType,
   PaginatedResult,
   SortDirection,
 } from './types.js';

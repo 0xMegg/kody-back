@@ -6,7 +6,7 @@ import { buildServer } from './server.js';
 async function main() {
   const config = loadConfig();
   const prisma = new PrismaClient();
-  const services = buildServerServices(prisma);
+  const services = buildServerServices(prisma, config);
   const server = buildServer(config, prisma, services);
 
   const shutdown = async () => {

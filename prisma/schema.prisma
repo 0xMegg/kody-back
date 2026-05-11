@@ -2,7 +2,7 @@
 // KODY OMS — Prisma Schema
 // =============================================================================
 // 5 business domains: Account, Product, Order, Payment, Shipment
-// + User (auth) + AuditLog (tracking)
+// + M0 membership/auth + ActionLog (tracking)
 //
 // Enum mapping (Frontend Korean → Prisma English):
 //   OrderStatus:        주문대기→PENDING, 주문완료→CONFIRMED, 주문중지→SUSPENDED
@@ -22,7 +22,7 @@ datasource db {
 }
 
 // =============================================================================
-// Enums (10)
+// Enums
 // =============================================================================
 
 enum Currency {
@@ -82,29 +82,132 @@ enum StockMovementType {
   ADJUSTMENT
 }
 
-enum AuditAction {
-  CREATE
-  UPDATE
-  DELETE
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum Role {
+  ADMIN
+  SALES
+  OPERATIONS
+  WAREHOUSE
+  FINANCE
+}
+
+enum ActionType {
+  INVENTORY_ADJUST
+  INVENTORY_INBOUND
+  ORDER_CREATE
+  ORDER_CONFIRM
+  ORDER_CANCEL
+  SHIPMENT_PICK
+  SHIPMENT_PACK
+  SHIPMENT_COMPLETE
+  PAYMENT_CREATE
+  ACCOUNT_CREATE
+  ACCOUNT_UPDATE
+  USER_LOGIN
+  USER_LOGOUT
+  USER_ROLE_CHANGE
+  USER_STATUS_CHANGE
 }
 
 // =============================================================================
-// User
+// M0 Membership And Auth
 // =============================================================================
 
+model Employee {
+  id         String         @id @default(cuid())
+  name       String
+  email      String         @unique
+  phone      String?
+  department String?
+  position   String?
+  status     EmployeeStatus @default(ACTIVE)
+  joinedAt   DateTime?
+  leftAt     DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  user User?
+}
+
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id               String     @id @default(cuid())
+  employeeId       String     @unique
+  email            String     @unique
+  passwordHash     String
+  displayName      String
+  profileImageUrl  String?
+  status           UserStatus @default(ACTIVE)
+  failedLoginCount Int        @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
   // Relations
+  employee      Employee       @relation(fields: [employeeId], references: [id])
+  roles         UserRole[]
+  inviteTokens  InviteToken[]  @relation("InvitedByUser")
+  refreshTokens RefreshToken[]
   salesAccounts Account[]      @relation("SalesRep")
   salesOrders   Order[]        @relation("OrderSalesRep")
   stockMovements StockMovement[]
-  auditLogs     AuditLog[]
+  actionLogs    ActionLog[]    @relation("ActionLogActor")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  role      Role
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, role])
+  @@index([userId])
+}
+
+model InviteToken {
+  id              String    @id @default(cuid())
+  email           String
+  tokenHash       String    @unique
+  invitedByUserId String
+  expiresAt       DateTime
+  usedAt          DateTime?
+  createdAt       DateTime  @default(now())
+
+  invitedBy User @relation("InvitedByUser", fields: [invitedByUserId], references: [id])
+
+  @@index([email])
+  @@index([invitedByUserId])
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  deviceInfo String?
+  ipAddress  String?
+  userAgent  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
 }
 
 // =============================================================================
@@ -354,21 +457,27 @@ model ShipmentItem {
 }
 
 // =============================================================================
-// AuditLog
+// ActionLog
 // =============================================================================
 
-model AuditLog {
-  id         String      @id @default(cuid())
-  action     AuditAction
-  entityType String
-  entityId   String
-  userId     String?
-  payload    Json?
-  createdAt  DateTime    @default(now())
+model ActionLog {
+  id            String     @id @default(cuid())
+  actorUserId   String?
+  actionType    ActionType
+  targetType    String
+  targetId      String?
+  beforeJson    Json?
+  afterJson     Json?
+  metadataJson  Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime   @default(now())
 
   // Relations
-  user User? @relation(fields: [userId], references: [id])
+  actor User? @relation("ActionLogActor", fields: [actorUserId], references: [id])
 
-  @@index([entityType, entityId])
-  @@index([userId])
+  @@index([actorUserId])
+  @@index([targetType, targetId])
+  @@index([actionType])
+  @@index([createdAt])
 }

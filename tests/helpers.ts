@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import type { ServerConfig } from '@/server/config.js';
-import type { ServerServices } from '@/server/services.js';
+import { buildServerServices } from '@/server/services.js';
 import { buildServer } from '@/server/server.js';
 
 const testConfig: ServerConfig = {
@@ -11,8 +11,6 @@ const testConfig: ServerConfig = {
   authJwtSecret: 'test-secret',
 };
 
-const testServices: ServerServices = {};
-
 export function createMockPrisma(overrides: Partial<PrismaClient> = {}) {
   return {
     $queryRaw: async () => [{ '?column?': 1 }],
@@ -22,6 +20,7 @@ export function createMockPrisma(overrides: Partial<PrismaClient> = {}) {
 
 export function buildTestServer(prismaOverrides: Partial<PrismaClient> = {}) {
   const prisma = createMockPrisma(prismaOverrides);
+  const testServices = buildServerServices(prisma, testConfig);
   const server = buildServer(testConfig, prisma, testServices);
   return server;
 }
