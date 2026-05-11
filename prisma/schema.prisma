@@ -154,14 +154,15 @@ model User {
   updatedAt        DateTime   @updatedAt
 
   // Relations
-  employee      Employee       @relation(fields: [employeeId], references: [id])
-  roles         UserRole[]
-  inviteTokens  InviteToken[]  @relation("InvitedByUser")
-  refreshTokens RefreshToken[]
-  salesAccounts Account[]      @relation("SalesRep")
-  salesOrders   Order[]        @relation("OrderSalesRep")
-  stockMovements StockMovement[]
-  actionLogs    ActionLog[]    @relation("ActionLogActor")
+  employee            Employee             @relation(fields: [employeeId], references: [id])
+  roles               UserRole[]
+  inviteTokens        InviteToken[]        @relation("InvitedByUser")
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  salesAccounts       Account[]            @relation("SalesRep")
+  salesOrders         Order[]              @relation("OrderSalesRep")
+  stockMovements      StockMovement[]
+  actionLogs          ActionLog[]          @relation("ActionLogActor")
 }
 
 model UserRole {
@@ -208,6 +209,22 @@ model RefreshToken {
   @@index([userId])
   @@index([expiresAt])
   @@index([revokedAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 // =============================================================================

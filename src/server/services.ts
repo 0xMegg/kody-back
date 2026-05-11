@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { AdminUserService } from '@/application/admin/admin-user-service.js';
 import { AuthService } from '@/application/auth/auth-service.js';
 import { InviteService } from '@/application/auth/invite-service.js';
+import { PasswordResetService } from '@/application/auth/password-reset-service.js';
 import { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 import type { ServerConfig } from './config.js';
 
@@ -9,6 +10,7 @@ export interface ServerServices {
   adminUsers: AdminUserService;
   auth: AuthService;
   invites: InviteService;
+  passwordReset: PasswordResetService;
 }
 
 export function buildServerServices(
@@ -23,5 +25,6 @@ export function buildServerServices(
       jwtSecret: config.authJwtSecret,
     }),
     invites: new InviteService(prisma as never),
+    passwordReset: new PasswordResetService(prisma as never),
   };
 }

@@ -3,30 +3,34 @@
 Current mode: backend Hermes active.
 
 Next action:
-- Return to root and run `plan` for `S9` Password Reset API.
-- Latest closeout completed `S8` Invite and Signup API under root macro-slice `Slice C`.
+- Return to root and run `plan` for `S10` Logs API.
+- Latest closeout completed `S9` Password Reset API under root macro-slice `Slice C`.
 
-S8 closeout result:
-- S8 Invite and Signup API is complete.
-- `POST /admin/users/invite` creates employee-linked invite tokens for ADMIN/FINANCE actors and returns the raw token once while persisting only `tokenHash`.
-- `POST /admin/users/invite/resend` is gated by a prior unused invite and supersedes old unused invites before creating a new token.
-- `POST /auth/invite/validate` validates public invite tokens and exposes invalid/used/expired outcomes through the unified envelope.
-- `POST /auth/signup` consumes a valid invite token, creates the linked active `User`, marks the invite as used in the same transaction, and returns a user summary with no roles assigned by default.
-- Invite/signup paths intentionally do not call `ActionLog` because the approved M0 `ActionType` list has no invite/signup action.
-- No Prisma schema/migration, env, dependency/lockfile, generated output, frontend, or ActionType change was made.
+S9 closeout result:
+- S9 Password Reset API is complete.
+- Added additive `PasswordResetToken` Prisma model and `User.passwordResetTokens` back-reference with one generated local migration: `20260511150814_s9_add_password_reset_token`.
+- Added `hashPasswordResetToken` with a distinct HMAC context from refresh and invite tokens.
+- Added public endpoints: `POST /auth/forgot-password`, `POST /auth/reset-password/validate`, and `POST /auth/reset-password`.
+- New reset-token error codes are limited to `RESET_TOKEN_INVALID`, `RESET_TOKEN_USED`, and `RESET_TOKEN_EXPIRED`.
+- Reset request stores only `tokenHash`; raw token is returned once only for eligible active/unlocked users as the approved M0 demo concession. Missing/ineligible users receive uniform `{ requested: true }` success.
+- Reset token TTL is 30 minutes. Prior unused reset tokens are superseded by setting `usedAt` before issuing a new token.
+- Reset consumption validates token before any `User` write, then updates password hash, clears `failedLoginCount`/`lockedUntil`, marks the reset token used, and revokes active refresh tokens in one transaction.
+- Forgot/reset paths intentionally do not call `ActionLog` because the approved M0 `ActionType` list has no password-reset action; no new `ActionType` was introduced.
+- M0 anti-enumeration timing remains a documented limitation: response shape is uniform, but constant-time response is not implemented.
 
 Verification:
-- `npx vitest run tests/invite-service.test.ts tests/invite-routes.test.ts tests/signup-routes.test.ts` passed with 54 tests across 3 files.
-- `npm test` passed with 162 tests across 12 files.
+- `npx vitest run tests/password-reset-service.test.ts tests/password-reset-routes.test.ts` passed with 41 tests across 2 files.
+- `npm test` passed with 203 tests across 14 files.
 - `npm run lint` passed.
 - `npm run build` passed.
 - Backend `git diff --check` passed.
 - Root `git diff --check` passed.
+- Independent review returned PASS with no blockers or important issues.
 
 Current backend progress:
-- Current backend M0 work includes schema/migration, auth service primitives, auth session routes, reusable RBAC guard, shared ActionLog writer, profile routes, admin user management routes, and invite/signup routes with tests passing.
-- S1, S2, S3, S4, S5a, S5b, S6, S7, and S8 are complete.
-- S9 and S10 remain not started.
+- Current backend M0 work includes schema/migration, auth service primitives, auth session routes, reusable RBAC guard, shared ActionLog writer, profile routes, admin user management routes, invite/signup routes, and password-reset routes with tests passing.
+- S1, S2, S3, S4, S5a, S5b, S6, S7, S8, and S9 are complete.
+- S10 remains not started.
 
 Workflow reminders:
 - Opus/Claude remains primary for backend `plan` and `develop`; Codex/Hermes invokes Claude, checks, records blockers, and owns closeout.
@@ -35,4 +39,4 @@ Workflow reminders:
 
 Open gates:
 - Prisma write commands (`migrate dev`, `migrate deploy`, `migrate resolve`, `db push`), Prisma schema/migration edits, `_prisma_migrations` mutation, env, lockfile, dependency, generated output, or API contract changes require explicit approval.
-- S9 persistent reset-token strategy/API contract, S10 logs API, product route protection, refresh-token rotation, and frontend F1 require their own plan/gate.
+- S10 logs API, product route protection, refresh-token rotation beyond S9 consume-time revocation, and frontend F1 require their own plan/gate.

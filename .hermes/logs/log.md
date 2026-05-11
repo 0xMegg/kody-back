@@ -811,3 +811,45 @@ Next:
 
 - Continue autonomous Phase 1/M0 sequence by running `plan` for `S9` Password Reset API under macro-slice `Slice C`.
 - S9 persistent reset-token strategy and API contract remain gated unless the S9 plan proves an approved existing model is sufficient and the user accepts the scoped contract.
+
+## 2026-05-12 — S9 Password Reset API Closeout
+
+Workflow:
+
+- User approved destructive local dev DB reset after Prisma detected checksum drift on the pre-existing M0 migration.
+- Ran `npx prisma migrate reset --force --skip-seed` against local `localhost:5432/kody_oms`, then ran the exact approved S9 migration command: `npx prisma migrate dev --name s9_add_password_reset_token`.
+- Opus/Claude was primary for backend develop in `kody-backend/`; Codex/Hermes performed orchestration, verification, review, and closeout.
+
+Accepted result:
+
+- S9 Password Reset API is complete for the current M0 backend surface.
+- Added additive `PasswordResetToken` table plus `User.passwordResetTokens` back-reference; migration `20260511150814_s9_add_password_reset_token` creates exactly the reset-token table, `tokenHash` unique constraint, `userId` and `expiresAt` indexes, and `User` foreign key.
+- Added `hashPasswordResetToken` with a distinct HMAC context from refresh and invite token hashes.
+- Added public endpoints: `POST /auth/forgot-password`, `POST /auth/reset-password/validate`, and `POST /auth/reset-password`.
+- New error codes are limited to `RESET_TOKEN_INVALID`, `RESET_TOKEN_USED`, and `RESET_TOKEN_EXPIRED`; existing `VALIDATION_ERROR`, `USER_INACTIVE`, and `PASSWORD_POLICY_FAILED` are reused.
+- Reset request persists only `tokenHash`; raw token is returned once only for eligible active/unlocked users as the approved M0 demo concession. Missing, suspended, inactive, or locked users receive the uniform success response without token persistence.
+- Reset token TTL is 30 minutes. Repeat reset requests supersede prior unused tokens by setting `usedAt` before creating the new token.
+- Reset consumption validates invalid/used/expired token state before any `User` write, then in one transaction updates `User.passwordHash`, clears `failedLoginCount`/`lockedUntil`, marks the reset token `usedAt`, and revokes active refresh tokens.
+- Forgot/reset paths intentionally do not call `prisma.actionLog.create`; no new `ActionType` was introduced because the approved M0 action list has no password-reset action.
+- M0 anti-enumeration timing remains a documented limitation: response shape is uniform, but constant-time response is not implemented.
+- Phase 0 P3-a and P3-b remain deferred/gated to `F1`.
+
+Verification:
+
+- `npx vitest run tests/password-reset-service.test.ts tests/password-reset-routes.test.ts` passed: 2 files, 41 tests.
+- `npm test` passed: 14 files, 203 tests.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Backend `git diff --check` passed.
+- Root `git diff --check` passed.
+- Independent review returned PASS with no blockers or important issues.
+
+Scope held:
+
+- Product implementation stayed in `kody-backend/`.
+- Schema/migration scope stayed additive-only for `PasswordResetToken` and the `User` back-reference.
+- No `.env`, dependency/lockfile, generated output, frontend, extra API endpoint, extra error code, ActionType, or ActionLog write was added.
+
+Next:
+
+- Continue autonomous Phase 1/M0 sequence by running `plan` for `S10` Logs API under macro-slice `Slice C`.
