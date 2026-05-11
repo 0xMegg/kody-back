@@ -3,30 +3,30 @@
 Current mode: backend Hermes active.
 
 Next action:
-- Return to root and run `plan` for `S8` Invite and Signup API.
-- Latest closeout completed `S7` Profile API closeout hardening under root macro-slice `Slice C`.
+- Return to root and run `plan` for `S9` Password Reset API.
+- Latest closeout completed `S8` Invite and Signup API under root macro-slice `Slice C`.
 
-S7 closeout result:
-- S7 Profile API is complete.
-- Profile read/update/password-change route coverage is verified in `tests/profile-routes.test.ts`.
-- `GET /profile`, `PATCH /profile`, and `POST /profile/password` all have explicit unauthenticated rejection coverage.
-- Profile update validation covers non-object bodies, invalid `displayName`, invalid `profileImageUrl`, whitespace-only `displayName`, no-op payloads, display-name-only updates, and profile-image-only updates.
-- Password change validation covers missing `currentPassword`, missing `newPassword`, wrong current password, weak new password, and successful password change.
-- Suspended actors are rejected before self profile update or password change.
-- Profile/password writes intentionally do not call `ActionLog` because the approved M0 `ActionType` list has no profile/password-change action.
+S8 closeout result:
+- S8 Invite and Signup API is complete.
+- `POST /admin/users/invite` creates employee-linked invite tokens for ADMIN/FINANCE actors and returns the raw token once while persisting only `tokenHash`.
+- `POST /admin/users/invite/resend` is gated by a prior unused invite and supersedes old unused invites before creating a new token.
+- `POST /auth/invite/validate` validates public invite tokens and exposes invalid/used/expired outcomes through the unified envelope.
+- `POST /auth/signup` consumes a valid invite token, creates the linked active `User`, marks the invite as used in the same transaction, and returns a user summary with no roles assigned by default.
+- Invite/signup paths intentionally do not call `ActionLog` because the approved M0 `ActionType` list has no invite/signup action.
+- No Prisma schema/migration, env, dependency/lockfile, generated output, frontend, or ActionType change was made.
 
 Verification:
-- `npx vitest run tests/profile-routes.test.ts` passed with 19 tests.
-- `npm test` passed with 108 tests across 9 files.
+- `npx vitest run tests/invite-service.test.ts tests/invite-routes.test.ts tests/signup-routes.test.ts` passed with 54 tests across 3 files.
+- `npm test` passed with 162 tests across 12 files.
 - `npm run lint` passed.
 - `npm run build` passed.
 - Backend `git diff --check` passed.
 - Root `git diff --check` passed.
 
 Current backend progress:
-- Current backend M0 work includes schema/migration, auth service, auth session routes, reusable RBAC guard, shared ActionLog writer, profile routes, and admin user management routes with tests passing.
-- S1, S2, S3, S4, S5a, S5b, S6, and S7 are complete.
-- S8, S9, and S10 remain not started.
+- Current backend M0 work includes schema/migration, auth service primitives, auth session routes, reusable RBAC guard, shared ActionLog writer, profile routes, admin user management routes, and invite/signup routes with tests passing.
+- S1, S2, S3, S4, S5a, S5b, S6, S7, and S8 are complete.
+- S9 and S10 remain not started.
 
 Workflow reminders:
 - Opus/Claude remains primary for backend `plan` and `develop`; Codex/Hermes invokes Claude, checks, records blockers, and owns closeout.
@@ -35,4 +35,4 @@ Workflow reminders:
 
 Open gates:
 - Prisma write commands (`migrate dev`, `migrate deploy`, `migrate resolve`, `db push`), Prisma schema/migration edits, `_prisma_migrations` mutation, env, lockfile, dependency, generated output, or API contract changes require explicit approval.
-- S8 signup/invite, S9 password reset, S10 logs API, product route protection, and refresh-token rotation require their own plan/gate.
+- S9 persistent reset-token strategy/API contract, S10 logs API, product route protection, refresh-token rotation, and frontend F1 require their own plan/gate.

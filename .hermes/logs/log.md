@@ -773,3 +773,41 @@ Next:
 
 - Return to root and run `plan` for `S8` Invite and Signup API under root macro-slice `Slice C`.
 - S8 may require scoped API contract expansion; Prisma schema/migration, dependency, env, and lockfile changes remain gated unless explicitly approved by the S8 plan.
+
+## 2026-05-11 — S8 Invite and Signup API Closeout
+
+Workflow:
+
+- User approved the scoped S8 API contract gate after the S8 plan was produced at `.hermes/plans/2026-05-11_224531-s8-invite-and-signup-api.md`.
+- Opus/Claude was the primary develop implementer for the approved S8 backend source/test changes in `kody-backend/`.
+- Codex/Hermes performed closeout review, verification rerun, scope assessment, and handoff updates.
+
+Accepted result:
+
+- S8 Invite and Signup API is complete for the current M0 backend surface.
+- `POST /admin/users/invite` creates employee-linked invite tokens for ADMIN/FINANCE actors, returns the raw token only once, and persists only `tokenHash`.
+- `POST /admin/users/invite/resend` is gated by a prior unused invite and supersedes prior unused invites before issuing the new token.
+- `POST /auth/invite/validate` validates public invite tokens and surfaces invalid, used, and expired token outcomes through the unified envelope.
+- `POST /auth/signup` consumes a valid invite token, creates the linked active `User`, marks the invite token as used in the same transaction, and returns a user summary with no default role assignment.
+- `hashInviteToken` uses a distinct invite-token hash space from refresh tokens.
+- Invite/signup paths intentionally do not call `prisma.actionLog.create` because the approved M0 `ActionType` list has no invite/signup action; no new `ActionType` was introduced.
+
+Verification:
+
+- `npx vitest run tests/invite-service.test.ts tests/invite-routes.test.ts tests/signup-routes.test.ts` passed: 3 files, 54 tests.
+- `npm test` passed: 12 files, 162 tests.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Backend `git diff --check` passed.
+- Root `git diff --check` passed.
+
+Scope held:
+
+- Product edits stayed in `kody-backend/` source/tests.
+- No Prisma schema/migration edit, Prisma write command, `_prisma_migrations` mutation, env edit, dependency/lockfile edit, generated output, frontend edit, S9 password reset, S10 logs API, product route protection, refresh-token rotation, or new `ActionType`.
+- API contract expansion stayed within the user-approved S8 gate: four endpoints and seven domain error codes only.
+
+Next:
+
+- Continue autonomous Phase 1/M0 sequence by running `plan` for `S9` Password Reset API under macro-slice `Slice C`.
+- S9 persistent reset-token strategy and API contract remain gated unless the S9 plan proves an approved existing model is sufficient and the user accepts the scoped contract.

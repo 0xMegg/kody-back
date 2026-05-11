@@ -71,6 +71,10 @@ export function hashToken(token: string): string {
   return createHmac('sha256', 'kody-refresh-token').update(token).digest('base64url');
 }
 
+export function hashInviteToken(token: string): string {
+  return createHmac('sha256', 'kody-invite-token').update(token).digest('base64url');
+}
+
 function encodeJson(value: unknown): string {
   return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
 }
