@@ -24,6 +24,30 @@ This policy applies when Hermes asks Claude Code to review, plan, inspect files,
 
 It does not require bypassing Claude permissions, changing global Claude settings, or weakening project isolation.
 
+## KODY Backend Develop Permission Profile
+
+User-approved on 2026-05-07:
+
+- Opus/Claude remains the primary model for backend `plan` and `develop`.
+- Codex invokes Claude, records blockers, checks results, and owns `closeout`; Codex does not become the backend developer unless the user explicitly approves fallback after a known blocker.
+- Backend `.claude/settings.json` should allow ordinary `Read`, `Glob`, `Grep`, `Write`, `Edit`, and `MultiEdit` tools so source/test/docs edits do not repeatedly stop on Claude tool permission prompts.
+
+Allowed ordinary backend surfaces:
+
+- `src/`
+- `tests/`
+- `docs/` if present
+- `.hermes/logs/` and `.hermes/NEXT.md` for handoff and verification records
+
+Still gated:
+
+- `.env` and secrets
+- `package.json`, lockfiles, dependency changes
+- `prisma/schema.prisma`, `prisma/migrations/`, and Prisma write commands
+- generated output such as `node_modules/`, `dist/`, and `build/`
+- destructive commands and database-mutating commands
+- API contract expansion not covered by the approved plan
+
 ## Diagnostic Order
 
 First check whether Claude started:
@@ -47,3 +71,5 @@ Then check whether Claude can access the files:
 ## Recording
 
 If a Claude review is skipped or delayed because of PATH, authentication, or workspace access, record which layer failed and how it was resolved in the project log.
+
+If Claude develop stops on an ordinary backend source/test/docs edit permission prompt, fix or retry the Claude permission profile first. Do not convert the slice into Codex develop unless the user explicitly approves fallback after seeing the blocker.
