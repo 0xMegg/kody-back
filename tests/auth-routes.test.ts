@@ -124,47 +124,57 @@ describe('POST /auth/login', () => {
 
 describe('POST /auth/refresh', () => {
   it('returns a new access token for a valid refresh token', async () => {
-    const user = await buildUser();
-    const refreshToken = issueRefreshToken(new Date('2026-05-07T00:00:00.000Z'));
-    const prisma = {
-      user: {
-        findUnique: vi.fn(async () => user),
-        update: vi.fn(async () => ({})),
-      },
-      refreshToken: {
-        findUnique: vi.fn(async () => ({
-          id: 'refresh_1',
-          userId: user.id,
-          tokenHash: refreshToken.tokenHash,
-          expiresAt: refreshToken.expiresAt,
-          revokedAt: null,
-          user,
-        })),
-        create: vi.fn(async () => ({})),
-        update: vi.fn(async () => ({})),
-      },
-      actionLog: {
-        create: vi.fn(async () => ({})),
-      },
-    };
-    const server = buildTestServer(prisma);
-    await server.ready();
+    const now = new Date('2026-05-07T12:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(now);
 
-    const response = await server.inject({
-      method: 'POST',
-      url: '/auth/refresh',
-      payload: {
-        refreshToken: refreshToken.token,
-      },
-    });
-    const body = response.json();
+      const user = await buildUser();
+      const refreshToken = issueRefreshToken(now);
+      const prisma = {
+        user: {
+          findUnique: vi.fn(async () => user),
+          update: vi.fn(async () => ({})),
+        },
+        refreshToken: {
+          findUnique: vi.fn(async () => ({
+            id: 'refresh_1',
+            userId: user.id,
+            tokenHash: refreshToken.tokenHash,
+            expiresAt: refreshToken.expiresAt,
+            revokedAt: null,
+            user,
+          })),
+          create: vi.fn(async () => ({})),
+          update: vi.fn(async () => ({})),
+        },
+        actionLog: {
+          create: vi.fn(async () => ({})),
+        },
+      };
+      const server = buildTestServer(prisma);
+      try {
+        await server.ready();
 
-    expect(response.statusCode).toBe(200);
-    expect(body.ok).toBe(true);
-    expect(body.data.accessToken).toEqual(expect.any(String));
-    expect(body.data.user.email).toBe(user.email);
+        const response = await server.inject({
+          method: 'POST',
+          url: '/auth/refresh',
+          payload: {
+            refreshToken: refreshToken.token,
+          },
+        });
+        const body = response.json();
 
-    await server.close();
+        expect(response.statusCode).toBe(200);
+        expect(body.ok).toBe(true);
+        expect(body.data.accessToken).toEqual(expect.any(String));
+        expect(body.data.user.email).toBe(user.email);
+      } finally {
+        await server.close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns 401 REFRESH_TOKEN_EXPIRED when the refresh token has expired', async () => {
