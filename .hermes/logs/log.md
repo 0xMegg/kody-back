@@ -892,3 +892,37 @@ Next:
 
 - Continue autonomous Phase 1/M0 sequence with `F1` Frontend M0 Shell and CP#2 demo readiness in `kody-frontend/`.
 - F1 must explicitly classify each route as `mock-only`, `contract-first`, or `real binding` and verify route visibility behavior.
+
+## 2026-05-19 — Stage 2 App Runner packaging artifacts
+
+Decision/scope:
+
+- User authorized proceeding as far as safely possible toward backend infrastructure Stage 7.
+- Implemented Stage 2 packaging artifacts only; no AWS commands, no secret values, no DB writes, no Prisma deploy, no package/lockfile changes, and no backend runtime behavior changes.
+
+Changed files:
+
+- `Dockerfile`
+- `.dockerignore`
+- `docs/deploy/app-runner-packaging.md`
+
+Verification:
+
+- `npm run lint` passed.
+- `npm test` passed: 16 files / 247 tests.
+- `npm run build` passed.
+- Docker build was skipped because this host does not have `docker` installed.
+- Claude/Opus read-only packaging review returned `PASS`; no required fixes before Stage 3 planning.
+
+Residual:
+
+- A Docker-capable environment must run `docker build -t kody-backend:<sha> .` before ECR/App Runner execution.
+- AWS account/cost/resource/operator inputs are still required before Stage 3.
+
+## 2026-05-19 — Stage 3 local Docker packaging smoke
+
+- Installed/verified Docker Desktop CLI on the Mac mini, then rebuilt `kody-backend:stage3-local`.
+- RED/local smoke failure 1: container exited with `ERR_MODULE_NOT_FOUND` for compiled `@/*` imports. Root cause: TypeScript path aliases were not rewritten for Node ESM runtime. Fix: add `tsc-alias` dev dependency and run `tsc && tsc-alias` for `npm run build`.
+- RED/local smoke failure 2: container exited with Prisma query engine mismatch (`linux-arm64-openssl-1.1.x` generated vs `linux-arm64-openssl-3.0.x` runtime). Root cause: OpenSSL was installed only in runtime stage after Prisma generation. Fix: install `openssl` and `ca-certificates` in build stage before `npx prisma generate`.
+- Verification: `npm run lint` passed; `npm test` passed (16 files / 247 tests); `npm run build` passed; `docker build -t kody-backend:stage3-local .` passed; local container `/health` on port 4001 returned HTTP 200 with `database: disconnected` as expected for dummy local DB URL.
+- No migrations, AWS resource changes, ECR pushes, or secret writes were performed.

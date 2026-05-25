@@ -6,22 +6,23 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
-    "build": "tsc",
+    "build": "tsc && tsc-alias",
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "fastify": "^5.2.1",
     "@fastify/cors": "^11.0.1",
     "@prisma/client": "^6.4.1",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1"
   },
   "devDependencies": {
-    "prisma": "^6.4.1",
-    "typescript": "^5.7.3",
-    "vitest": "^3.0.5",
     "@types/node": "^22.13.4",
-    "tsx": "^4.19.3"
+    "prisma": "^6.4.1",
+    "tsc-alias": "^1.8.17",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
   }
 }
