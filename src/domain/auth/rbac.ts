@@ -5,6 +5,7 @@ export type PermissionResource =
   | 'profile'
   | 'account'
   | 'productInventory'
+  | 'product'
   | 'payment'
   | 'order'
   | 'shipment'
@@ -26,6 +27,7 @@ const ROLE_PERMISSIONS: Record<Exclude<Role, 'ADMIN' | 'FINANCE'>, PermissionSet
     profile: ['read', 'write'],
     account: ['read', 'write'],
     productInventory: ['read'],
+    product: ['read'],
     payment: ['read'],
     order: ['read', 'write'],
     shipment: ['read'],
@@ -35,6 +37,7 @@ const ROLE_PERMISSIONS: Record<Exclude<Role, 'ADMIN' | 'FINANCE'>, PermissionSet
     profile: ['read', 'write'],
     account: ['read', 'write'],
     productInventory: ['read', 'write'],
+    product: ['read', 'write'],
     payment: ['read'],
     order: ['read', 'write'],
     shipment: ['read'],
@@ -44,6 +47,7 @@ const ROLE_PERMISSIONS: Record<Exclude<Role, 'ADMIN' | 'FINANCE'>, PermissionSet
     profile: ['read', 'write'],
     account: ['read'],
     productInventory: ['read', 'write'],
+    product: ['read', 'write'],
     payment: ['read'],
     order: ['read'],
     shipment: ['read', 'write', 'execute'],

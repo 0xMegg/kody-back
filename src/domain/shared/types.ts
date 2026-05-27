@@ -39,6 +39,8 @@ export type ActionType =
   | 'PAYMENT_CREATE'
   | 'ACCOUNT_CREATE'
   | 'ACCOUNT_UPDATE'
+  | 'PRODUCT_CREATE'
+  | 'PRODUCT_UPDATE'
   | 'USER_LOGIN'
   | 'USER_LOGOUT'
   | 'USER_ROLE_CHANGE'

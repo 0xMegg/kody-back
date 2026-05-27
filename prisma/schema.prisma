@@ -113,6 +113,8 @@ enum ActionType {
   PAYMENT_CREATE
   ACCOUNT_CREATE
   ACCOUNT_UPDATE
+  PRODUCT_CREATE
+  PRODUCT_UPDATE
   USER_LOGIN
   USER_LOGOUT
   USER_ROLE_CHANGE
@@ -308,6 +310,11 @@ model Product {
   name        String
   weightG     Int
   priceKRW    Int
+  sku                 String?  @unique
+  barcode             String?  @unique
+  avgPurchasePriceKRW Int      @default(0)
+  orderBasedStock     Int      @default(0)
+  shipmentBasedStock  Int      @default(0)
   stockOnHand Int             @default(0)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
