@@ -4,11 +4,16 @@ import type {
   ListAccountsInput,
   UpdateAccountInput,
 } from '@/application/account/account-service.js';
-import type { DepositSource } from '@/domain/shared/types.js';
+import type {
+  CreateShippingAddressInput,
+  UpdateShippingAddressInput,
+} from '@/application/account/shipping-address-service.js';
+import type { DepositSource, Incoterm } from '@/domain/shared/types.js';
 import { successResponse, ValidationError } from '../api/index.js';
 import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
 
 const DEPOSIT_SOURCES: readonly DepositSource[] = ['NONGHYUP', 'HANA', 'PAYPAL', 'PAYONEER'];
+const INCOTERMS: readonly Incoterm[] = ['EXW', 'FOB', 'CIF', 'DDP', 'DAP'];
 
 export function registerAccountRoutes(server: FastifyInstance): void {
   server.post(
@@ -64,6 +69,78 @@ export function registerAccountRoutes(server: FastifyInstance): void {
         ...body,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
+      });
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.post(
+    '/accounts/:accountId/addresses',
+    { preHandler: requirePermission({ resource: 'account', action: 'write' }) },
+    async (request, reply) => {
+      const accountId = parseAddressAccountId(request.params);
+      const body = parseCreateAddressBody(request.body);
+      const result = await server.services.shippingAddresses.createAddress({
+        accountId,
+        ...body,
+      });
+
+      reply.status(201);
+      return successResponse(result);
+    },
+  );
+
+  server.get(
+    '/accounts/:accountId/addresses',
+    { preHandler: requirePermission({ resource: 'account', action: 'read' }) },
+    async (request, reply) => {
+      const accountId = parseAddressAccountId(request.params);
+      const result = await server.services.shippingAddresses.listAddresses(accountId);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.get(
+    '/accounts/:accountId/addresses/:addressId',
+    { preHandler: requirePermission({ resource: 'account', action: 'read' }) },
+    async (request, reply) => {
+      const { accountId, addressId } = parseAddressParams(request.params);
+      const result = await server.services.shippingAddresses.getAddress(accountId, addressId);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.patch(
+    '/accounts/:accountId/addresses/:addressId',
+    { preHandler: requirePermission({ resource: 'account', action: 'write' }) },
+    async (request, reply) => {
+      const { accountId, addressId } = parseAddressParams(request.params);
+      const body = parseUpdateAddressBody(request.body);
+      const result = await server.services.shippingAddresses.updateAddress({
+        accountId,
+        addressId,
+        ...body,
+      });
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.delete(
+    '/accounts/:accountId/addresses/:addressId',
+    { preHandler: requirePermission({ resource: 'account', action: 'write' }) },
+    async (request, reply) => {
+      const { accountId, addressId } = parseAddressParams(request.params);
+      const result = await server.services.shippingAddresses.deleteAddress({
+        accountId,
+        addressId,
       });
 
       reply.status(200);
@@ -234,6 +311,109 @@ function parseDiscountRate(value: unknown): number {
   }
 
   return value;
+}
+
+type CreateAddressBody = Omit<CreateShippingAddressInput, 'accountId'>;
+type UpdateAddressBody = Omit<UpdateShippingAddressInput, 'accountId' | 'addressId'>;
+
+function parseAddressAccountId(params: unknown): string {
+  if (
+    !isRecord(params) ||
+    typeof params.accountId !== 'string' ||
+    params.accountId.trim() === ''
+  ) {
+    throw new ValidationError('account id is required');
+  }
+
+  return params.accountId;
+}
+
+function parseAddressParams(params: unknown): { accountId: string; addressId: string } {
+  if (!isRecord(params)) {
+    throw new ValidationError('account id is required');
+  }
+
+  if (typeof params.accountId !== 'string' || params.accountId.trim() === '') {
+    throw new ValidationError('account id is required');
+  }
+
+  if (typeof params.addressId !== 'string' || params.addressId.trim() === '') {
+    throw new ValidationError('address id is required');
+  }
+
+  return { accountId: params.accountId, addressId: params.addressId };
+}
+
+function parseCreateAddressBody(body: unknown): CreateAddressBody {
+  if (!isRecord(body)) {
+    throw new ValidationError('Request body must be an object');
+  }
+
+  const label = parseRequiredString(body.label, 'label');
+  const country = parseRequiredString(body.country, 'country');
+  const fullAddress = parseRequiredString(body.fullAddress, 'fullAddress');
+
+  const result: CreateAddressBody = {
+    label,
+    country,
+    fullAddress,
+  };
+
+  if (body.isPrimary !== undefined) {
+    result.isPrimary = parseBoolean(body.isPrimary, 'isPrimary');
+  }
+
+  if (body.defaultIncoterm !== undefined && body.defaultIncoterm !== null) {
+    result.defaultIncoterm = parseIncoterm(body.defaultIncoterm);
+  }
+
+  return result;
+}
+
+function parseUpdateAddressBody(body: unknown): UpdateAddressBody {
+  if (!isRecord(body)) {
+    throw new ValidationError('Request body must be an object');
+  }
+
+  const result: UpdateAddressBody = {};
+
+  if (body.label !== undefined) {
+    result.label = parseRequiredString(body.label, 'label');
+  }
+
+  if (body.country !== undefined) {
+    result.country = parseRequiredString(body.country, 'country');
+  }
+
+  if (body.fullAddress !== undefined) {
+    result.fullAddress = parseRequiredString(body.fullAddress, 'fullAddress');
+  }
+
+  if (body.isPrimary !== undefined) {
+    result.isPrimary = parseBoolean(body.isPrimary, 'isPrimary');
+  }
+
+  if (body.defaultIncoterm !== undefined) {
+    result.defaultIncoterm = body.defaultIncoterm === null ? null : parseIncoterm(body.defaultIncoterm);
+  }
+
+  return result;
+}
+
+function parseBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new ValidationError(`${field} must be a boolean`);
+  }
+
+  return value;
+}
+
+function parseIncoterm(value: unknown): Incoterm {
+  if (typeof value !== 'string' || !INCOTERMS.includes(value as Incoterm)) {
+    throw new ValidationError('defaultIncoterm must be EXW, FOB, CIF, DDP, or DAP');
+  }
+
+  return value as Incoterm;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
