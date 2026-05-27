@@ -7,6 +7,7 @@ import { InviteService } from '@/application/auth/invite-service.js';
 import { PasswordResetService } from '@/application/auth/password-reset-service.js';
 import { ActionLogQueryService } from '@/application/logs/action-log-query-service.js';
 import { ProductService } from '@/application/product/product-service.js';
+import { PaymentService } from '@/application/payment/payment-service.js';
 import { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 import type { ServerConfig } from './config.js';
 
@@ -19,6 +20,7 @@ export interface ServerServices {
   logs: ActionLogQueryService;
   passwordReset: PasswordResetService;
   products: ProductService;
+  payments: PaymentService;
 }
 
 export function buildServerServices(
@@ -38,5 +40,6 @@ export function buildServerServices(
     logs: new ActionLogQueryService(prisma as never),
     passwordReset: new PasswordResetService(prisma as never),
     products: new ProductService(prisma as never, actionLogWriter),
+    payments: new PaymentService(prisma as never, actionLogWriter),
   };
 }

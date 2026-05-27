@@ -76,6 +76,18 @@ export function registerAccountRoutes(server: FastifyInstance): void {
     },
   );
 
+  server.get(
+    '/accounts/:id/balance',
+    { preHandler: requirePermission({ resource: 'payment', action: 'read' }) },
+    async (request, reply) => {
+      const accountId = parseAccountId(request.params);
+      const result = await server.services.payments.getAccountBalance(accountId);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
   server.post(
     '/accounts/:accountId/addresses',
     { preHandler: requirePermission({ resource: 'account', action: 'write' }) },

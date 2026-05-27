@@ -111,6 +111,8 @@ enum ActionType {
   SHIPMENT_PACK
   SHIPMENT_COMPLETE
   PAYMENT_CREATE
+  PAYMENT_UPDATE
+  PAYMENT_DELETE
   ACCOUNT_CREATE
   ACCOUNT_UPDATE
   PRODUCT_CREATE
@@ -415,6 +417,7 @@ model Payment {
   krwEquivalent Decimal       @db.Decimal(15, 2)
   type          PaymentType   @default(DEPOSIT)
   memo          String?
+  depositorName String?
   createdAt     DateTime      @default(now())
 
   // Relations
