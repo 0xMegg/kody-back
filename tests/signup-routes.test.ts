@@ -228,7 +228,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: 'unknown', password: 'Password123', displayName: 'New User' },
+      payload: { token: 'unknown', loginId: 'new.user', password: 'Password123', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -251,7 +251,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: 'New User' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -274,7 +274,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: 'New User' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -294,7 +294,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: 'New User' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -317,7 +317,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: 'New User' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -333,7 +333,7 @@ describe('POST /auth/signup', () => {
     const prisma = buildPrisma({
       invite: validInvite,
       employee: activeEmployee,
-      existingUser: { id: 'user_existing', employeeId: 'employee_1', email: 'invitee@kody.test' },
+      existingUser: { id: 'user_existing', employeeId: 'employee_1', email: 'invitee@kody.test', loginId: 'existing' },
     });
     const server = buildTestServer(prisma);
     await server.ready();
@@ -341,7 +341,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: 'New User' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -361,7 +361,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'weak', displayName: 'New User' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'weak', displayName: 'New User' },
     });
     const body = response.json();
 
@@ -381,7 +381,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: '   ' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: '   ' },
     });
     const body = response.json();
 
@@ -401,7 +401,7 @@ describe('POST /auth/signup', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { token: VALID_TOKEN, password: 'Password123', displayName: '  Trimmed Name  ' },
+      payload: { token: VALID_TOKEN, loginId: 'new.user', password: 'Password123', displayName: '  Trimmed Name  ' },
     });
     const body = response.json();
 
@@ -412,6 +412,7 @@ describe('POST /auth/signup', () => {
         id: 'user_new',
         employeeId: 'employee_1',
         email: 'invitee@kody.test',
+        loginId: 'new.user',
         displayName: 'Trimmed Name',
         status: 'ACTIVE',
         roles: [],
@@ -423,6 +424,7 @@ describe('POST /auth/signup', () => {
       data: {
         employeeId: 'employee_1',
         email: 'invitee@kody.test',
+        loginId: 'new.user',
         passwordHash: expect.any(String),
         displayName: 'Trimmed Name',
         status: 'ACTIVE',
@@ -450,7 +452,7 @@ interface SignupPrismaSpec {
     usedAt: Date | null;
   } | null;
   employee?: { id: string; email: string; status: 'ACTIVE' | 'INACTIVE' } | null;
-  existingUser?: { id: string; employeeId: string; email: string } | null;
+  existingUser?: { id: string; employeeId: string; email: string; loginId?: string } | null;
 }
 
 function buildPrisma(spec: SignupPrismaSpec) {

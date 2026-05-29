@@ -17,7 +17,7 @@ export interface AuthServiceConfig {
 }
 
 export interface LoginInput {
-  email: string;
+  loginId: string;
   password: string;
   deviceInfo?: string;
   ipAddress?: string;
@@ -28,6 +28,7 @@ export interface AuthenticatedUser {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   displayName: string;
   status: UserStatus;
   roles: Role[];
@@ -69,6 +70,7 @@ interface StoredUser {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   passwordHash: string;
   displayName: string;
   profileImageUrl?: string | null;
@@ -90,7 +92,7 @@ interface StoredRefreshToken {
 interface AuthRepository {
   user: {
     findUnique(args: {
-      where: { email?: string; id?: string };
+      where: { loginId?: string; id?: string };
       include: { roles: true };
     }): Promise<StoredUser | null>;
     update(args: {
@@ -129,9 +131,9 @@ export class AuthService {
   ) {}
 
   async login(input: LoginInput): Promise<LoginResult> {
-    const email = normalizeEmail(input.email);
+    const loginId = normalizeLoginId(input.loginId);
     const user = await this.repository.user.findUnique({
-      where: { email },
+      where: { loginId },
       include: { roles: true },
     });
 
@@ -193,6 +195,7 @@ export class AuthService {
         id: user.id,
         employeeId: user.employeeId,
         email: user.email,
+        loginId: user.loginId,
         displayName: user.displayName,
         status: user.status,
         roles,
@@ -391,8 +394,8 @@ export class AuthService {
   }
 }
 
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
+function normalizeLoginId(loginId: string): string {
+  return loginId.trim().toLowerCase();
 }
 
 function normalizeOptionalUrl(value: string | null): string | null {
@@ -430,6 +433,7 @@ function toAuthenticatedUser(user: StoredUser): AuthenticatedUser {
     id: user.id,
     employeeId: user.employeeId,
     email: user.email,
+    loginId: user.loginId,
     displayName: user.displayName,
     status: user.status,
     roles: user.roles.map((role) => role.role),

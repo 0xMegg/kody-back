@@ -9,6 +9,7 @@ describe('POST /auth/login', () => {
       id: 'user_1',
       employeeId: 'employee_1',
       email: 'admin@kody.test',
+      loginId: 'admin',
       passwordHash: await hashPassword('Password123'),
       displayName: 'KODY Admin',
       status: 'ACTIVE',
@@ -35,7 +36,7 @@ describe('POST /auth/login', () => {
       method: 'POST',
       url: '/auth/login',
       payload: {
-        email: 'admin@kody.test',
+        loginId: 'admin',
         password: 'Password123',
       },
     });
@@ -47,6 +48,7 @@ describe('POST /auth/login', () => {
       id: 'user_1',
       employeeId: 'employee_1',
       email: 'admin@kody.test',
+      loginId: 'admin',
       displayName: 'KODY Admin',
       status: 'ACTIVE',
       roles: ['ADMIN', 'FINANCE'],
@@ -57,7 +59,7 @@ describe('POST /auth/login', () => {
     await server.close();
   });
 
-  it('returns validation error when email is missing', async () => {
+  it('returns validation error when loginId is missing', async () => {
     const server = buildTestServer();
     await server.ready();
 
@@ -82,6 +84,7 @@ describe('POST /auth/login', () => {
       id: 'user_1',
       employeeId: 'employee_1',
       email: 'admin@kody.test',
+      loginId: 'admin',
       passwordHash: await hashPassword('Password123'),
       displayName: 'KODY Admin',
       status: 'ACTIVE',
@@ -108,7 +111,7 @@ describe('POST /auth/login', () => {
       method: 'POST',
       url: '/auth/login',
       payload: {
-        email: 'admin@kody.test',
+        loginId: 'admin',
         password: 'WrongPassword123',
       },
     });

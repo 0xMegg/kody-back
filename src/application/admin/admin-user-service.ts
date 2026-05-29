@@ -9,6 +9,7 @@ export interface AdminUserSummary {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   displayName: string;
   profileImageUrl?: string | null;
   status: UserStatus;
@@ -65,6 +66,7 @@ interface StoredUser {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   displayName: string;
   profileImageUrl?: string | null;
   status: UserStatus;
@@ -242,6 +244,7 @@ function toAdminUserSummary(user: StoredUser): AdminUserSummary {
     id: user.id,
     employeeId: user.employeeId,
     email: user.email,
+    loginId: user.loginId,
     displayName: user.displayName,
     profileImageUrl: user.profileImageUrl,
     status: user.status,

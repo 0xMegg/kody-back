@@ -9,6 +9,7 @@ interface MockUser {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   passwordHash: string;
   displayName: string;
   status: UserStatus;
@@ -31,7 +32,7 @@ describe('AuthService', () => {
     );
 
     const result = await service.login({
-      email: ' ADMIN@KODY.TEST ',
+      loginId: ' ADMIN ',
       password: 'Password123',
       deviceInfo: 'Chrome on macOS',
       ipAddress: '127.0.0.1',
@@ -42,6 +43,7 @@ describe('AuthService', () => {
       id: user.id,
       employeeId: user.employeeId,
       email: user.email,
+      loginId: user.loginId,
       displayName: user.displayName,
       status: 'ACTIVE',
       roles: ['ADMIN', 'FINANCE'],
@@ -92,7 +94,7 @@ describe('AuthService', () => {
     );
 
     await expect(
-      service.login({ email: user.email, password: 'WrongPassword123' }),
+      service.login({ loginId: user.loginId, password: 'WrongPassword123' }),
     ).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS',
       statusCode: 401,
@@ -117,7 +119,7 @@ describe('AuthService', () => {
     );
 
     await expect(
-      service.login({ email: user.email, password: 'WrongPassword123' }),
+      service.login({ loginId: user.loginId, password: 'WrongPassword123' }),
     ).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS',
       statusCode: 401,
@@ -144,7 +146,7 @@ describe('AuthService', () => {
     );
 
     await expect(
-      service.login({ email: user.email, password: 'Password123' }),
+      service.login({ loginId: user.loginId, password: 'Password123' }),
     ).rejects.toMatchObject({
       code: 'USER_INACTIVE',
       statusCode: 403,
@@ -165,7 +167,7 @@ describe('AuthService', () => {
     );
 
     await expect(
-      service.login({ email: user.email, password: 'Password123' }),
+      service.login({ loginId: user.loginId, password: 'Password123' }),
     ).rejects.toMatchObject({
       code: 'ACCOUNT_LOCKED',
       statusCode: 423,
@@ -240,6 +242,7 @@ describe('AuthService', () => {
       id: user.id,
       employeeId: user.employeeId,
       email: user.email,
+      loginId: user.loginId,
       displayName: user.displayName,
       status: 'ACTIVE',
       roles: ['ADMIN', 'FINANCE'],
@@ -303,6 +306,7 @@ describe('AuthService', () => {
       id: user.id,
       employeeId: user.employeeId,
       email: user.email,
+      loginId: user.loginId,
       displayName: 'Updated User',
       status: 'ACTIVE',
       roles: ['ADMIN', 'FINANCE'],
@@ -549,6 +553,7 @@ async function buildUser(overrides: Partial<MockUser> = {}): Promise<MockUser> {
     id: 'user_1',
     employeeId: 'employee_1',
     email: 'admin@kody.test',
+    loginId: 'admin',
     passwordHash: await hashPassword('Password123'),
     displayName: 'KODY Admin',
     status: 'ACTIVE',

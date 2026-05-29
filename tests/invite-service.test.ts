@@ -311,6 +311,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'unknown',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: 'New User',
       }),
@@ -329,6 +330,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: 'New User',
       }),
@@ -347,6 +349,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: 'New User',
       }),
@@ -362,6 +365,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: 'New User',
       }),
@@ -380,6 +384,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: 'New User',
       }),
@@ -399,10 +404,52 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: 'New User',
       }),
     ).rejects.toMatchObject({ code: 'USER_ALREADY_EXISTS', statusCode: 409 });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('throws INVALID_LOGIN_ID when loginId is whitespace-only and does not create a user', async () => {
+    const prisma = buildInvitePrisma({ inviteByHash: validInvite, employee: activeEmployee });
+    const service = new InviteService(prisma as never, () => FIXED_NOW);
+
+    await expect(
+      service.consumeInvite({
+        token: 'valid-token',
+        loginId: '   ',
+        password: 'Password123',
+        displayName: 'New User',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_LOGIN_ID', statusCode: 400 });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('throws LOGIN_ID_ALREADY_EXISTS when loginId is already used and does not create a user', async () => {
+    const prisma = buildInvitePrisma({
+      inviteByHash: validInvite,
+      employee: activeEmployee,
+      existingUser: {
+        id: 'user_existing',
+        employeeId: 'other_employee',
+        email: 'other@kody.test',
+        loginId: 'taken.id',
+      },
+    });
+    const service = new InviteService(prisma as never, () => FIXED_NOW);
+
+    await expect(
+      service.consumeInvite({
+        token: 'valid-token',
+        loginId: 'TAKEN.ID',
+        password: 'Password123',
+        displayName: 'New User',
+      }),
+    ).rejects.toMatchObject({ code: 'LOGIN_ID_ALREADY_EXISTS', statusCode: 409 });
     expect(prisma.user.create).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
@@ -414,6 +461,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'Password123',
         displayName: '   ',
       }),
@@ -429,6 +477,7 @@ describe('InviteService.consumeInvite', () => {
     await expect(
       service.consumeInvite({
         token: 'valid-token',
+        loginId: 'new.user',
         password: 'weak',
         displayName: 'New User',
       }),
@@ -443,6 +492,7 @@ describe('InviteService.consumeInvite', () => {
 
     const result = await service.consumeInvite({
       token: 'valid-token',
+      loginId: '  New.User_01  ',
       password: 'Password123',
       displayName: '  Trimmed Name  ',
     });
@@ -453,6 +503,7 @@ describe('InviteService.consumeInvite', () => {
       data: {
         employeeId: 'employee_1',
         email: 'invitee@kody.test',
+        loginId: 'new.user_01',
         passwordHash: expect.any(String),
         displayName: 'Trimmed Name',
         status: 'ACTIVE',
@@ -473,6 +524,7 @@ describe('InviteService.consumeInvite', () => {
         id: 'user_new',
         employeeId: 'employee_1',
         email: 'invitee@kody.test',
+        loginId: 'new.user_01',
         displayName: 'Trimmed Name',
         status: 'ACTIVE',
         roles: [],
@@ -484,7 +536,7 @@ describe('InviteService.consumeInvite', () => {
 
 interface InvitePrismaSpec {
   employee?: { id: string; email: string; status: 'ACTIVE' | 'INACTIVE' } | null;
-  existingUser?: { id: string; employeeId: string; email: string } | null;
+  existingUser?: { id: string; employeeId: string; email: string; loginId?: string } | null;
   createReturn?: { id: string };
   priorInvites?: Array<{ id: string; email: string; usedAt: Date | null }>;
   inviteByHash?: {
@@ -498,12 +550,29 @@ interface InvitePrismaSpec {
 }
 
 function buildInvitePrisma(spec: InvitePrismaSpec) {
+  const findExistingUser = (args: {
+    where: { OR: Array<{ employeeId?: string; email?: string; loginId?: string }> };
+  }) => {
+    if (!spec.existingUser) {
+      return null;
+    }
+
+    return args.where.OR.some(
+      (condition) =>
+        (condition.employeeId !== undefined && condition.employeeId === spec.existingUser?.employeeId) ||
+        (condition.email !== undefined && condition.email === spec.existingUser?.email) ||
+        (condition.loginId !== undefined && condition.loginId === spec.existingUser?.loginId),
+    )
+      ? spec.existingUser
+      : null;
+  };
+
   return {
     employee: {
       findUnique: vi.fn(async () => spec.employee ?? null),
     },
     user: {
-      findFirst: vi.fn(async () => spec.existingUser ?? null),
+      findFirst: vi.fn(async (args) => findExistingUser(args)),
       create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
         id: 'user_new',
         ...args.data,

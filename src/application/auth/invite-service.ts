@@ -20,6 +20,7 @@ export interface ResendInviteInput {
 
 export interface ConsumeInviteInput {
   token: string;
+  loginId: string;
   password: string;
   displayName: string;
 }
@@ -28,6 +29,7 @@ export interface ConsumedUser {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   displayName: string;
   status: 'ACTIVE';
   roles: [];
@@ -59,6 +61,7 @@ interface StoredUserRow {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
 }
 
 interface StoredInviteToken {
@@ -74,6 +77,7 @@ interface CreatedUserRow {
   id: string;
   employeeId: string;
   email: string;
+  loginId: string;
   displayName: string;
   status: 'ACTIVE';
 }
@@ -84,12 +88,13 @@ interface InviteRepository {
   };
   user: {
     findFirst(args: {
-      where: { OR: Array<{ employeeId: string } | { email: string }> };
+      where: { OR: Array<{ employeeId: string } | { email: string } | { loginId: string }> };
     }): Promise<StoredUserRow | null>;
     create(args: {
       data: {
         employeeId: string;
         email: string;
+        loginId: string;
         passwordHash: string;
         displayName: string;
         status: 'ACTIVE';
@@ -170,7 +175,22 @@ export class InviteService {
     const employee = await this.assertEmployeeAvailable(invite.email, undefined);
     await this.assertUserDoesNotExist(employee.id, invite.email);
 
+    const loginId = normalizeLoginId(input.loginId);
     const displayName = input.displayName.trim();
+
+    if (loginId === '') {
+      throw new DomainRuleError('INVALID_LOGIN_ID', 'Login ID is required', 400);
+    }
+
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(loginId)) {
+      throw new DomainRuleError(
+        'INVALID_LOGIN_ID',
+        'Login ID must be 3-32 lowercase letters, numbers, dots, underscores, or hyphens',
+        400,
+      );
+    }
+
+    await this.assertLoginIdAvailable(loginId);
 
     if (displayName === '') {
       throw new DomainRuleError('INVALID_DISPLAY_NAME', 'Display name is required', 400);
@@ -193,6 +213,7 @@ export class InviteService {
         data: {
           employeeId: employee.id,
           email: invite.email,
+          loginId,
           passwordHash,
           displayName,
           status: 'ACTIVE',
@@ -210,6 +231,7 @@ export class InviteService {
         id: createdUser.id,
         employeeId: employee.id,
         email: invite.email,
+        loginId: createdUser.loginId,
         displayName,
         status: 'ACTIVE',
         roles: [],
@@ -268,6 +290,16 @@ export class InviteService {
     }
   }
 
+  private async assertLoginIdAvailable(loginId: string): Promise<void> {
+    const existing = await this.repository.user.findFirst({
+      where: { OR: [{ loginId }] },
+    });
+
+    if (existing) {
+      throw new DomainRuleError('LOGIN_ID_ALREADY_EXISTS', 'Login ID already exists', 409);
+    }
+  }
+
   private async issueInvite(email: string, actorUserId: string): Promise<InviteResult> {
     const token = randomBytes(RAW_TOKEN_BYTES).toString('base64url');
     const tokenHash = hashInviteToken(token);
@@ -293,4 +325,8 @@ export class InviteService {
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+function normalizeLoginId(loginId: string): string {
+  return loginId.trim().toLowerCase();
 }

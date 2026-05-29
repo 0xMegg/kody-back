@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { successResponse, ValidationError } from '../api/index.js';
 
 interface LoginBody {
-  email: string;
+  loginId: string;
   password: string;
   deviceInfo?: string;
 }
@@ -15,7 +15,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
   server.post('/auth/login', async (request: FastifyRequest, reply) => {
     const body = parseLoginBody(request.body);
     const result = await server.services.auth.login({
-      email: body.email,
+      loginId: body.loginId,
       password: body.password,
       deviceInfo: body.deviceInfo,
       ipAddress: request.ip,
@@ -60,10 +60,10 @@ function parseLoginBody(body: unknown): LoginBody {
     throw new ValidationError('Request body must be an object');
   }
 
-  const { email, password, deviceInfo } = body;
+  const { loginId, password, deviceInfo } = body;
 
-  if (typeof email !== 'string' || email.trim() === '') {
-    throw new ValidationError('email is required');
+  if (typeof loginId !== 'string' || loginId.trim() === '') {
+    throw new ValidationError('loginId is required');
   }
 
   if (typeof password !== 'string' || password === '') {
@@ -75,7 +75,7 @@ function parseLoginBody(body: unknown): LoginBody {
   }
 
   return {
-    email,
+    loginId,
     password,
     ...(deviceInfo !== undefined && { deviceInfo }),
   };

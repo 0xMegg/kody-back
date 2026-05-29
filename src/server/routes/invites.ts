@@ -17,6 +17,7 @@ interface ValidateInviteBody {
 
 interface SignupBody {
   token: string;
+  loginId: string;
   password: string;
   displayName: string;
 }
@@ -65,6 +66,7 @@ export function registerInviteRoutes(server: FastifyInstance): void {
     const body = parseSignupBody(request.body);
     const result = await server.services.invites.consumeInvite({
       token: body.token,
+      loginId: body.loginId,
       password: body.password,
       displayName: body.displayName,
     });
@@ -128,10 +130,14 @@ function parseSignupBody(body: unknown): SignupBody {
     throw new ValidationError('Request body must be an object');
   }
 
-  const { token, password, displayName } = body;
+  const { token, loginId, password, displayName } = body;
 
   if (typeof token !== 'string' || token === '') {
     throw new ValidationError('token is required');
+  }
+
+  if (typeof loginId !== 'string' || loginId.trim() === '') {
+    throw new ValidationError('loginId is required');
   }
 
   if (typeof password !== 'string' || password === '') {
@@ -142,7 +148,7 @@ function parseSignupBody(body: unknown): SignupBody {
     throw new ValidationError('displayName is required');
   }
 
-  return { token, password, displayName };
+  return { token, loginId, password, displayName };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

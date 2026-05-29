@@ -26,6 +26,7 @@ describe('admin user routes', () => {
     expect(body.data[0]).toMatchObject({
       id: target.id,
       email: target.email,
+      loginId: target.loginId,
       roles: ['SALES'],
       employee: {
         id: target.employee.id,
@@ -59,6 +60,7 @@ describe('admin user routes', () => {
     expect(body.data).toMatchObject({
       id: target.id,
       email: target.email,
+      loginId: target.loginId,
       roles: ['SALES'],
       employee: {
         id: target.employee.id,
@@ -698,6 +700,7 @@ function buildUser(input: {
     id: input.id,
     employeeId: `${input.id}_employee`,
     email: `${input.id}@kody.test`,
+    loginId: input.id,
     passwordHash: 'unused',
     displayName: `User ${input.id}`,
     profileImageUrl: null,
