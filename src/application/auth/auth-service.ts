@@ -409,7 +409,7 @@ function normalizeOptionalUrl(value: string | null): string | null {
 }
 
 function invalidCredentials(): DomainRuleError {
-  return new DomainRuleError('INVALID_CREDENTIALS', 'Invalid email or password', 401);
+  return new DomainRuleError('INVALID_CREDENTIALS', 'Invalid credentials', 401);
 }
 
 function invalidAccessToken(): DomainRuleError {

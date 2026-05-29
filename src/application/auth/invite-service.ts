@@ -208,22 +208,32 @@ export class InviteService {
       );
     }
 
-    const results = await this.repository.$transaction([
-      this.repository.user.create({
-        data: {
-          employeeId: employee.id,
-          email: invite.email,
-          loginId,
-          passwordHash,
-          displayName,
-          status: 'ACTIVE',
-        },
-      }),
-      this.repository.inviteToken.update({
-        where: { id: invite.id },
-        data: { usedAt: this.now() },
-      }),
-    ]);
+    let results: unknown[];
+
+    try {
+      results = await this.repository.$transaction([
+        this.repository.user.create({
+          data: {
+            employeeId: employee.id,
+            email: invite.email,
+            loginId,
+            passwordHash,
+            displayName,
+            status: 'ACTIVE',
+          },
+        }),
+        this.repository.inviteToken.update({
+          where: { id: invite.id },
+          data: { usedAt: this.now() },
+        }),
+      ]);
+    } catch (error) {
+      if (isLoginIdUniqueConstraintError(error)) {
+        throw loginIdAlreadyExists();
+      }
+
+      throw error;
+    }
     const createdUser = results[0] as CreatedUserRow;
 
     return {
@@ -296,7 +306,7 @@ export class InviteService {
     });
 
     if (existing) {
-      throw new DomainRuleError('LOGIN_ID_ALREADY_EXISTS', 'Login ID already exists', 409);
+      throw loginIdAlreadyExists();
     }
   }
 
@@ -329,4 +339,28 @@ function normalizeEmail(email: string): string {
 
 function normalizeLoginId(loginId: string): string {
   return loginId.trim().toLowerCase();
+}
+
+function loginIdAlreadyExists(): DomainRuleError {
+  return new DomainRuleError('LOGIN_ID_ALREADY_EXISTS', 'Login ID already exists', 409);
+}
+
+function isLoginIdUniqueConstraintError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return false;
+  }
+
+  const prismaError = error as { code?: unknown; meta?: { target?: unknown } };
+
+  if (prismaError.code !== 'P2002') {
+    return false;
+  }
+
+  const target = prismaError.meta?.target;
+
+  if (Array.isArray(target)) {
+    return target.includes('loginId');
+  }
+
+  return typeof target === 'string' && target.includes('loginId');
 }

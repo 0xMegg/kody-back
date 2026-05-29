@@ -454,6 +454,22 @@ describe('InviteService.consumeInvite', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('maps a concurrent loginId unique violation to LOGIN_ID_ALREADY_EXISTS', async () => {
+    const prisma = buildInvitePrisma({ inviteByHash: validInvite, employee: activeEmployee });
+    prisma.user.create.mockRejectedValueOnce({ code: 'P2002', meta: { target: ['loginId'] } });
+    const service = new InviteService(prisma as never, () => FIXED_NOW);
+
+    await expect(
+      service.consumeInvite({
+        token: 'valid-token',
+        loginId: 'new.user',
+        password: 'Password123',
+        displayName: 'New User',
+      }),
+    ).rejects.toMatchObject({ code: 'LOGIN_ID_ALREADY_EXISTS', statusCode: 409 });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
   it('throws INVALID_DISPLAY_NAME when displayName is whitespace-only and does not create a user', async () => {
     const prisma = buildInvitePrisma({ inviteByHash: validInvite, employee: activeEmployee });
     const service = new InviteService(prisma as never, () => FIXED_NOW);
