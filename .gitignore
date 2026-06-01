@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.hermes/logs/
 .hermes/tmp/
 *.tsbuildinfo
 .DS_Store
