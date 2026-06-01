@@ -12,7 +12,7 @@ describe('invite admin routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/admin/users/invite',
-      payload: { email: 'invitee@kody.test' },
+      payload: { email: 'invitee@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -35,7 +35,7 @@ describe('invite admin routes', () => {
       method: 'POST',
       url: '/admin/users/invite',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: 'invitee@kody.test' },
+      payload: { email: 'invitee@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -61,7 +61,7 @@ describe('invite admin routes', () => {
       method: 'POST',
       url: '/admin/users/invite',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: ' INVITEE@kody.test ' },
+      payload: { email: ' INVITEE@kody.test ', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -80,6 +80,7 @@ describe('invite admin routes', () => {
     expect(createArgs.data.email).toBe('invitee@kody.test');
     expect(createArgs.data.invitedByUserId).toBe(actor.id);
     expect(createArgs.data.usedAt).toBeNull();
+    expect(createArgs.data.roles).toEqual({ create: [{ role: 'SALES' }] });
     expect(typeof createArgs.data.tokenHash).toBe('string');
     expect(createArgs.data.tokenHash).not.toBe(body.data.token);
     expect(prisma.actionLog.create).not.toHaveBeenCalled();
@@ -141,7 +142,7 @@ describe('invite admin routes', () => {
       method: 'POST',
       url: '/admin/users/invite',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: 'missing@kody.test' },
+      payload: { email: 'missing@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -166,7 +167,7 @@ describe('invite admin routes', () => {
       method: 'POST',
       url: '/admin/users/invite',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: 'inactive@kody.test' },
+      payload: { email: 'inactive@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -192,7 +193,7 @@ describe('invite admin routes', () => {
       method: 'POST',
       url: '/admin/users/invite',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: 'taken@kody.test' },
+      payload: { email: 'taken@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -214,7 +215,7 @@ describe('invite resend route', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/admin/users/invite/resend',
-      payload: { email: 'invitee@kody.test' },
+      payload: { email: 'invitee@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -241,7 +242,7 @@ describe('invite resend route', () => {
       method: 'POST',
       url: '/admin/users/invite/resend',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: 'invitee@kody.test' },
+      payload: { email: 'invitee@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -267,6 +268,7 @@ describe('invite resend route', () => {
         invitedByUserId: 'admin_1',
         expiresAt: new Date('2026-05-12T00:00:00.000Z'),
         usedAt: null,
+        roles: [{ role: 'SALES' as Role }],
       },
     });
     const server = buildTestServer(prisma);
@@ -276,7 +278,7 @@ describe('invite resend route', () => {
       method: 'POST',
       url: '/admin/users/invite/resend',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: { email: 'invitee@kody.test' },
+      payload: { email: 'invitee@kody.test', roles: ['SALES'] },
     });
     const body = response.json();
 
@@ -336,6 +338,7 @@ interface InviteRoutePrismaSpec {
     invitedByUserId: string;
     expiresAt: Date;
     usedAt: Date | null;
+    roles?: Array<{ role: Role }>;
   } | null;
 }
 
@@ -352,6 +355,9 @@ function buildPrisma(spec: InviteRoutePrismaSpec) {
     },
     employee: {
       findUnique: vi.fn(async () => spec.employee ?? null),
+    },
+    userRole: {
+      createMany: vi.fn(async () => ({ count: 1 })),
     },
     inviteToken: {
       findUnique: vi.fn(async () => null),

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { hashInviteToken } from '@/domain/auth/tokens.js';
 import { buildTestServer } from './helpers.js';
+import type { Role } from '@/domain/shared/types.js';
 
 const VALID_TOKEN = 'valid-invite-token';
 const EXPIRES_AT = new Date('2027-01-01T00:00:00.000Z');
@@ -59,6 +60,7 @@ describe('POST /auth/invite/validate', () => {
     expect(body.error.code).toBe('INVITE_TOKEN_INVALID');
     expect(prisma.inviteToken.findUnique).toHaveBeenCalledWith({
       where: { tokenHash: hashInviteToken('unknown-token') },
+      include: { roles: { select: { role: true } } },
     });
     expect(prisma.actionLog.create).not.toHaveBeenCalled();
 
@@ -146,8 +148,9 @@ describe('POST /auth/invite/validate', () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.ok).toBe(true);
-    expect(Object.keys(body.data).sort()).toEqual(['email', 'expiresAt']);
+    expect(Object.keys(body.data).sort()).toEqual(['email', 'expiresAt', 'roles']);
     expect(body.data.email).toBe('invitee@kody.test');
+    expect(body.data.roles).toEqual(['SALES']);
     expect(body.data.tokenHash).toBeUndefined();
     expect(body.data.invitedByUserId).toBeUndefined();
     expect(prisma.actionLog.create).not.toHaveBeenCalled();
@@ -164,6 +167,7 @@ describe('POST /auth/signup', () => {
     invitedByUserId: 'admin_1',
     expiresAt: EXPIRES_AT,
     usedAt: null as Date | null,
+    roles: [{ role: 'SALES' as Role }],
   };
   const activeEmployee = {
     id: 'employee_1',
@@ -393,7 +397,7 @@ describe('POST /auth/signup', () => {
     await server.close();
   });
 
-  it('creates User and sets invite usedAt in a single transaction, returns user body with no roles and no actionLog', async () => {
+  it('creates User, UserRole rows, and sets invite usedAt in a single transaction', async () => {
     const prisma = buildPrisma({ invite: validInvite, employee: activeEmployee });
     const server = buildTestServer(prisma);
     await server.ready();
@@ -415,7 +419,7 @@ describe('POST /auth/signup', () => {
         loginId: 'new.user',
         displayName: 'Trimmed Name',
         status: 'ACTIVE',
-        roles: [],
+        roles: ['SALES'],
       },
     });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
@@ -435,7 +439,10 @@ describe('POST /auth/signup', () => {
       where: { id: 'invite_1' },
       data: { usedAt: expect.any(Date) },
     });
-    expect(prisma.userRole?.create).toBeUndefined();
+    expect(prisma.userRole.createMany).toHaveBeenCalledWith({
+      data: [{ userId: 'user_new', role: 'SALES' }],
+      skipDuplicates: true,
+    });
     expect(prisma.actionLog.create).not.toHaveBeenCalled();
 
     await server.close();
@@ -450,13 +457,14 @@ interface SignupPrismaSpec {
     invitedByUserId: string;
     expiresAt: Date;
     usedAt: Date | null;
+    roles?: Array<{ role: Role }>;
   } | null;
   employee?: { id: string; email: string; status: 'ACTIVE' | 'INACTIVE' } | null;
   existingUser?: { id: string; employeeId: string; email: string; loginId?: string } | null;
 }
 
 function buildPrisma(spec: SignupPrismaSpec) {
-  return {
+  const prisma = {
     user: {
       findFirst: vi.fn(async () => spec.existingUser ?? null),
       create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
@@ -468,7 +476,9 @@ function buildPrisma(spec: SignupPrismaSpec) {
       findUnique: vi.fn(async () => spec.employee ?? null),
     },
     inviteToken: {
-      findUnique: vi.fn(async () => spec.invite ?? null),
+      findUnique: vi.fn(async () =>
+        spec.invite ? { ...spec.invite, roles: spec.invite.roles ?? [{ role: 'SALES' as Role }] } : null,
+      ),
       findFirst: vi.fn(async () => null),
       create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
         id: 'invite_new',
@@ -477,9 +487,15 @@ function buildPrisma(spec: SignupPrismaSpec) {
       update: vi.fn(async () => ({})),
       updateMany: vi.fn(async () => ({ count: 0 })),
     },
+    userRole: {
+      createMany: vi.fn(async () => ({ count: 1 })),
+    },
     actionLog: {
       create: vi.fn(async () => ({})),
     },
-    $transaction: vi.fn(async (operations: Promise<unknown>[]) => Promise.all(operations)),
+    $transaction: vi.fn(async (operation: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+      typeof operation === 'function' ? operation(prisma) : Promise.all(operation),
+    ),
   };
+  return prisma;
 }

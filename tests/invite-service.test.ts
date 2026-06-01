@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InviteService } from '@/application/auth/invite-service.js';
 import { hashInviteToken, hashToken } from '@/domain/auth/tokens.js';
+import type { Role } from '@/domain/shared/types.js';
 
 const FIXED_NOW = new Date('2026-05-11T00:00:00.000Z');
 const EXPECTED_EXPIRES_AT = new Date(FIXED_NOW.getTime() + 72 * 60 * 60 * 1000);
@@ -33,6 +34,7 @@ describe('InviteService.createInvite', () => {
       service.createInvite({
         actorUserId: 'admin_1',
         email: 'no-one@kody.test',
+        roles: ['SALES'],
       }),
     ).rejects.toMatchObject({ code: 'EMPLOYEE_NOT_FOUND', statusCode: 404 });
     expect(prisma.inviteToken.create).not.toHaveBeenCalled();
@@ -48,6 +50,7 @@ describe('InviteService.createInvite', () => {
       service.createInvite({
         actorUserId: 'admin_1',
         email: 'inactive@kody.test',
+        roles: ['SALES'],
       }),
     ).rejects.toMatchObject({ code: 'EMPLOYEE_INACTIVE', statusCode: 403 });
     expect(prisma.inviteToken.create).not.toHaveBeenCalled();
@@ -64,12 +67,13 @@ describe('InviteService.createInvite', () => {
       service.createInvite({
         actorUserId: 'admin_1',
         email: 'taken@kody.test',
+        roles: ['SALES'],
       }),
     ).rejects.toMatchObject({ code: 'USER_ALREADY_EXISTS', statusCode: 409 });
     expect(prisma.inviteToken.create).not.toHaveBeenCalled();
   });
 
-  it('creates an invite token row with normalized email, hashed token, 72h expiry, and returns the raw token once', async () => {
+  it('creates an invite token row with normalized email, selected roles, email delivery metadata, and returns the raw token once', async () => {
     const prisma = buildInvitePrisma({
       employee: { id: 'employee_1', email: 'invitee@kody.test', status: 'ACTIVE' },
       createReturn: { id: 'invite_1' },
@@ -79,6 +83,7 @@ describe('InviteService.createInvite', () => {
     const result = await service.createInvite({
       actorUserId: 'admin_1',
       email: ' INVITEE@kody.test ',
+      roles: ['SALES', 'OPERATIONS', 'SALES'],
     });
 
     expect(result.email).toBe('invitee@kody.test');
@@ -88,6 +93,9 @@ describe('InviteService.createInvite', () => {
     expect(typeof result.token).toBe('string');
     expect(result.token.length).toBeGreaterThanOrEqual(64);
     expect(result.token).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(result.roles).toEqual(['SALES', 'OPERATIONS']);
+    expect(result.delivery.status).toBe('RECORDED');
+    expect(result.delivery.channel).toBe('dev-outbox');
     expect(prisma.inviteToken.create).toHaveBeenCalledTimes(1);
     expect(prisma.inviteToken.create).toHaveBeenCalledWith({
       data: {
@@ -96,6 +104,7 @@ describe('InviteService.createInvite', () => {
         invitedByUserId: 'admin_1',
         expiresAt: EXPECTED_EXPIRES_AT,
         usedAt: null,
+        roles: { create: [{ role: 'SALES' }, { role: 'OPERATIONS' }] },
       },
     });
   });
@@ -160,7 +169,7 @@ describe('InviteService.resendInvite', () => {
     const callOrder: string[] = [];
     const prisma = buildInvitePrisma({
       employee: { id: 'employee_1', email: 'invitee@kody.test', status: 'ACTIVE' },
-      priorInvites: [{ id: 'invite_prior', email: 'invitee@kody.test', usedAt: null }],
+      priorInvites: [{ id: 'invite_prior', email: 'invitee@kody.test', usedAt: null, roles: [{ role: 'SALES' as Role }] }],
       createReturn: { id: 'invite_2' },
     });
     prisma.inviteToken.updateMany.mockImplementation(async () => {
@@ -191,6 +200,7 @@ describe('InviteService.resendInvite', () => {
         invitedByUserId: 'admin_1',
         expiresAt: EXPECTED_EXPIRES_AT,
         usedAt: null,
+        roles: { create: [{ role: 'SALES' }] },
       },
     });
     expect(result.id).toBe('invite_2');
@@ -210,6 +220,7 @@ describe('InviteService.validateInvite', () => {
     });
     expect(prisma.inviteToken.findUnique).toHaveBeenCalledWith({
       where: { tokenHash: hashInviteToken('unknown-token') },
+      include: { roles: { select: { role: true } } },
     });
   });
 
@@ -279,6 +290,7 @@ describe('InviteService.validateInvite', () => {
         invitedByUserId: 'admin_1',
         expiresAt: EXPECTED_EXPIRES_AT,
         usedAt: null,
+        roles: [{ role: 'SALES' as Role }],
       },
     });
     const service = new InviteService(prisma as never, () => FIXED_NOW);
@@ -288,8 +300,9 @@ describe('InviteService.validateInvite', () => {
     expect(result).toEqual({
       email: 'invitee@kody.test',
       expiresAt: EXPECTED_EXPIRES_AT,
+      roles: ['SALES'],
     });
-    expect(Object.keys(result)).toEqual(['email', 'expiresAt']);
+    expect(Object.keys(result)).toEqual(['email', 'expiresAt', 'roles']);
   });
 });
 
@@ -301,6 +314,7 @@ describe('InviteService.consumeInvite', () => {
     invitedByUserId: 'admin_1',
     expiresAt: EXPECTED_EXPIRES_AT,
     usedAt: null as Date | null,
+    roles: [{ role: 'SALES' as Role }],
   };
   const activeEmployee = { id: 'employee_1', email: 'invitee@kody.test', status: 'ACTIVE' as const };
 
@@ -502,7 +516,7 @@ describe('InviteService.consumeInvite', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('creates user and marks invite usedAt inside $transaction, returns the user body, no roles, no actionLog', async () => {
+  it('creates user, creates invite roles as UserRole rows, marks invite usedAt inside $transaction, and returns roles', async () => {
     const prisma = buildInvitePrisma({ inviteByHash: validInvite, employee: activeEmployee });
     const service = new InviteService(prisma as never, () => FIXED_NOW);
 
@@ -525,6 +539,11 @@ describe('InviteService.consumeInvite', () => {
         status: 'ACTIVE',
       },
     });
+    expect(prisma.userRole.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.userRole.createMany).toHaveBeenCalledWith({
+      data: [{ userId: 'user_new', role: 'SALES' }],
+      skipDuplicates: true,
+    });
     expect(prisma.inviteToken.update).toHaveBeenCalledTimes(1);
     expect(prisma.inviteToken.update).toHaveBeenCalledWith({
       where: { id: 'invite_1' },
@@ -532,8 +551,7 @@ describe('InviteService.consumeInvite', () => {
     });
 
     const transactionArgs = prisma.$transaction.mock.calls[0]?.[0];
-    expect(Array.isArray(transactionArgs)).toBe(true);
-    expect(transactionArgs).toHaveLength(2);
+    expect(typeof transactionArgs).toBe('function');
 
     expect(result).toEqual({
       user: {
@@ -543,7 +561,7 @@ describe('InviteService.consumeInvite', () => {
         loginId: 'new.user_01',
         displayName: 'Trimmed Name',
         status: 'ACTIVE',
-        roles: [],
+        roles: ['SALES'],
       },
     });
     expect(prisma.actionLog.create).not.toHaveBeenCalled();
@@ -554,7 +572,7 @@ interface InvitePrismaSpec {
   employee?: { id: string; email: string; status: 'ACTIVE' | 'INACTIVE' } | null;
   existingUser?: { id: string; employeeId: string; email: string; loginId?: string } | null;
   createReturn?: { id: string };
-  priorInvites?: Array<{ id: string; email: string; usedAt: Date | null }>;
+  priorInvites?: Array<{ id: string; email: string; usedAt: Date | null; roles?: Array<{ role: Role }> }>;
   inviteByHash?: {
     id: string;
     email: string;
@@ -562,6 +580,7 @@ interface InvitePrismaSpec {
     invitedByUserId: string;
     expiresAt: Date;
     usedAt: Date | null;
+    roles?: Array<{ role: Role }>;
   } | null;
 }
 
@@ -583,7 +602,7 @@ function buildInvitePrisma(spec: InvitePrismaSpec) {
       : null;
   };
 
-  return {
+  const repo = {
     employee: {
       findUnique: vi.fn(async () => spec.employee ?? null),
     },
@@ -593,6 +612,9 @@ function buildInvitePrisma(spec: InvitePrismaSpec) {
         id: 'user_new',
         ...args.data,
       })),
+    },
+    userRole: {
+      createMany: vi.fn(async () => ({ count: spec.inviteByHash?.roles?.length ?? 0 })),
     },
     inviteToken: {
       findUnique: vi.fn(async () => spec.inviteByHash ?? null),
@@ -607,6 +629,9 @@ function buildInvitePrisma(spec: InvitePrismaSpec) {
     actionLog: {
       create: vi.fn(async () => ({})),
     },
-    $transaction: vi.fn(async (operations: Promise<unknown>[]) => Promise.all(operations)),
+    $transaction: vi.fn(async (operations: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+      typeof operations === 'function' ? operations(repo) : Promise.all(operations),
+    ),
   };
+  return repo;
 }

@@ -6,6 +6,14 @@ export interface ServerConfig {
   corsOrigin: string;
   databaseUrl: string;
   authJwtSecret: string;
+  appOrigin: string;
+  smtpHost?: string;
+  smtpPort: number;
+  smtpUser?: string;
+  smtpPassword?: string;
+  smtpSecure: boolean;
+  smtpRequireTls: boolean;
+  emailFrom: string;
 }
 
 export function loadConfig(): ServerConfig {
@@ -25,5 +33,18 @@ export function loadConfig(): ServerConfig {
     corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
     databaseUrl,
     authJwtSecret,
+    appOrigin: process.env.APP_ORIGIN || process.env.CORS_ORIGIN || 'http://localhost:3000',
+    smtpHost: process.env.SMTP_HOST,
+    smtpPort: Number(process.env.SMTP_PORT) || 1025,
+    smtpUser: process.env.SMTP_USER,
+    smtpPassword: process.env.SMTP_PASSWORD,
+    smtpSecure: parseBoolean(process.env.SMTP_SECURE, false),
+    smtpRequireTls: parseBoolean(process.env.SMTP_REQUIRE_TLS, false),
+    emailFrom: process.env.EMAIL_FROM || 'no-reply@kody.test',
   };
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  return value === 'true' || value === '1' || value.toLowerCase() === 'yes';
 }

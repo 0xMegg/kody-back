@@ -191,11 +191,24 @@ model InviteToken {
   usedAt          DateTime?
   createdAt       DateTime  @default(now())
 
-  invitedBy User @relation("InvitedByUser", fields: [invitedByUserId], references: [id])
+  invitedBy User              @relation("InvitedByUser", fields: [invitedByUserId], references: [id])
+  roles     InviteTokenRole[]
 
   @@index([email])
   @@index([invitedByUserId])
   @@index([expiresAt])
+}
+
+model InviteTokenRole {
+  id            String   @id @default(cuid())
+  inviteTokenId String
+  role          Role
+  createdAt     DateTime @default(now())
+
+  inviteToken InviteToken @relation(fields: [inviteTokenId], references: [id])
+
+  @@unique([inviteTokenId, role])
+  @@index([inviteTokenId])
 }
 
 model RefreshToken {

@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify';
+import type { Role } from '@/domain/shared/types.js';
 import { successResponse, ValidationError } from '../api/index.js';
 import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
 
 interface CreateInviteBody {
   email: string;
   employeeId?: string;
+  roles: Role[];
 }
 
 interface ResendInviteBody {
@@ -31,6 +33,7 @@ export function registerInviteRoutes(server: FastifyInstance): void {
       const result = await server.services.invites.createInvite({
         actorUserId: (request as AuthenticatedRequest).authUser.id,
         email: body.email,
+        roles: body.roles,
         ...(body.employeeId !== undefined && { employeeId: body.employeeId }),
       });
 
@@ -81,7 +84,7 @@ function parseCreateInviteBody(body: unknown): CreateInviteBody {
     throw new ValidationError('Request body must be an object');
   }
 
-  const { email, employeeId } = body;
+  const { email, employeeId, roles } = body;
 
   if (typeof email !== 'string' || email.trim() === '') {
     throw new ValidationError('email is required');
@@ -90,10 +93,17 @@ function parseCreateInviteBody(body: unknown): CreateInviteBody {
   if (employeeId !== undefined && (typeof employeeId !== 'string' || employeeId.trim() === '')) {
     throw new ValidationError('employeeId must be a non-empty string');
   }
+  if (!Array.isArray(roles) || roles.length === 0) {
+    throw new ValidationError('roles must be a non-empty array');
+  }
+  if (!roles.every(isRole)) {
+    throw new ValidationError('roles contains an invalid value');
+  }
 
   return {
     email,
-    ...(employeeId !== undefined && { employeeId }),
+    roles: Array.from(new Set(roles)),
+    ...(typeof employeeId === 'string' && { employeeId }),
   };
 }
 
@@ -153,4 +163,14 @@ function parseSignupBody(body: unknown): SignupBody {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isRole(value: unknown): value is Role {
+  return (
+    value === 'ADMIN' ||
+    value === 'SALES' ||
+    value === 'OPERATIONS' ||
+    value === 'WAREHOUSE' ||
+    value === 'FINANCE'
+  );
 }

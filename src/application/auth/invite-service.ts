@@ -1,16 +1,23 @@
 import { randomBytes } from 'node:crypto';
 import { DomainRuleError } from '@/domain/shared/errors.js';
-import type { EmployeeStatus } from '@/domain/shared/types.js';
+import type { EmployeeStatus, Role } from '@/domain/shared/types.js';
 import { hashPassword } from '@/domain/auth/password.js';
 import { hashInviteToken } from '@/domain/auth/tokens.js';
+import {
+  DevOutboxInviteEmailSender,
+  type InviteEmailDelivery,
+  type InviteEmailSender,
+} from './invite-email-sender.js';
 
 const INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const RAW_TOKEN_BYTES = 48;
+const VALID_ROLES: readonly Role[] = ['ADMIN', 'SALES', 'OPERATIONS', 'WAREHOUSE', 'FINANCE'];
 
 export interface CreateInviteInput {
   actorUserId: string;
   email: string;
   employeeId?: string;
+  roles: Role[];
 }
 
 export interface ResendInviteInput {
@@ -32,7 +39,7 @@ export interface ConsumedUser {
   loginId: string;
   displayName: string;
   status: 'ACTIVE';
-  roles: [];
+  roles: Role[];
 }
 
 export interface ConsumeInviteResult {
@@ -44,11 +51,14 @@ export interface InviteResult {
   email: string;
   expiresAt: Date;
   token: string;
+  roles: Role[];
+  delivery: InviteEmailDelivery;
 }
 
 export interface InviteValidationResult {
   email: string;
   expiresAt: Date;
+  roles: Role[];
 }
 
 interface StoredEmployee {
@@ -71,6 +81,7 @@ interface StoredInviteToken {
   invitedByUserId: string;
   expiresAt: Date;
   usedAt: Date | null;
+  roles?: Array<{ role: Role }>;
 }
 
 interface CreatedUserRow {
@@ -101,12 +112,20 @@ interface InviteRepository {
       };
     }): Promise<CreatedUserRow>;
   };
+  userRole: {
+    createMany(args: {
+      data: Array<{ userId: string; role: Role }>;
+      skipDuplicates: true;
+    }): Promise<{ count: number }>;
+  };
   inviteToken: {
     findUnique(args: {
       where: { tokenHash: string };
+      include?: { roles: { select: { role: true } } };
     }): Promise<StoredInviteToken | null>;
     findFirst(args: {
       where: { email: string; usedAt: null };
+      include?: { roles: { select: { role: true } } };
     }): Promise<StoredInviteToken | null>;
     create(args: {
       data: {
@@ -115,6 +134,7 @@ interface InviteRepository {
         invitedByUserId: string;
         expiresAt: Date;
         usedAt: Date | null;
+        roles: { create: Array<{ role: Role }> };
       };
     }): Promise<StoredInviteToken>;
     update(args: {
@@ -126,21 +146,26 @@ interface InviteRepository {
       data: { usedAt: Date };
     }): Promise<{ count: number }>;
   };
-  $transaction(operations: ReadonlyArray<Promise<unknown>>): Promise<unknown[]>;
+  $transaction<T>(
+    operations: ReadonlyArray<Promise<unknown>> | ((tx: InviteRepository) => Promise<T>),
+  ): Promise<unknown[] | T>;
 }
 
 export class InviteService {
   constructor(
     private readonly repository: InviteRepository,
     private readonly now: () => Date = () => new Date(),
+    private readonly emailSender: InviteEmailSender = new DevOutboxInviteEmailSender(),
+    private readonly appOrigin: string = 'http://localhost:3000',
   ) {}
 
   async createInvite(input: CreateInviteInput): Promise<InviteResult> {
     const email = normalizeEmail(input.email);
+    const roles = normalizeRoles(input.roles);
     const employee = await this.assertEmployeeAvailable(email, input.employeeId);
     await this.assertUserDoesNotExist(employee.id, email);
 
-    return this.issueInvite(email, input.actorUserId);
+    return this.issueInvite(email, input.actorUserId, roles);
   }
 
   async resendInvite(input: ResendInviteInput): Promise<InviteResult> {
@@ -150,6 +175,7 @@ export class InviteService {
 
     const priorInvite = await this.repository.inviteToken.findFirst({
       where: { email, usedAt: null },
+      include: { roles: { select: { role: true } } },
     });
 
     if (!priorInvite) {
@@ -161,17 +187,18 @@ export class InviteService {
       data: { usedAt: this.now() },
     });
 
-    return this.issueInvite(email, input.actorUserId);
+    return this.issueInvite(email, input.actorUserId, this.inviteRoles(priorInvite));
   }
 
   async validateInvite(token: string): Promise<InviteValidationResult> {
     const invite = await this.findInviteByToken(token);
 
-    return { email: invite.email, expiresAt: invite.expiresAt };
+    return { email: invite.email, expiresAt: invite.expiresAt, roles: this.inviteRoles(invite) };
   }
 
   async consumeInvite(input: ConsumeInviteInput): Promise<ConsumeInviteResult> {
     const invite = await this.findInviteByToken(input.token);
+    const roles = this.inviteRoles(invite);
     const employee = await this.assertEmployeeAvailable(invite.email, undefined);
     await this.assertUserDoesNotExist(employee.id, invite.email);
 
@@ -208,11 +235,11 @@ export class InviteService {
       );
     }
 
-    let results: unknown[];
+    let createdUser: CreatedUserRow;
 
     try {
-      results = await this.repository.$transaction([
-        this.repository.user.create({
+      createdUser = (await this.repository.$transaction(async (tx) => {
+        const user = await tx.user.create({
           data: {
             employeeId: employee.id,
             email: invite.email,
@@ -221,12 +248,17 @@ export class InviteService {
             displayName,
             status: 'ACTIVE',
           },
-        }),
-        this.repository.inviteToken.update({
+        });
+        await tx.userRole.createMany({
+          data: roles.map((role) => ({ userId: user.id, role })),
+          skipDuplicates: true,
+        });
+        await tx.inviteToken.update({
           where: { id: invite.id },
           data: { usedAt: this.now() },
-        }),
-      ]);
+        });
+        return user;
+      })) as CreatedUserRow;
     } catch (error) {
       if (isLoginIdUniqueConstraintError(error)) {
         throw loginIdAlreadyExists();
@@ -234,7 +266,6 @@ export class InviteService {
 
       throw error;
     }
-    const createdUser = results[0] as CreatedUserRow;
 
     return {
       user: {
@@ -244,7 +275,7 @@ export class InviteService {
         loginId: createdUser.loginId,
         displayName,
         status: 'ACTIVE',
-        roles: [],
+        roles,
       },
     };
   }
@@ -252,6 +283,7 @@ export class InviteService {
   private async findInviteByToken(token: string): Promise<StoredInviteToken> {
     const invite = await this.repository.inviteToken.findUnique({
       where: { tokenHash: hashInviteToken(token) },
+      include: { roles: { select: { role: true } } },
     });
 
     if (!invite) {
@@ -310,7 +342,7 @@ export class InviteService {
     }
   }
 
-  private async issueInvite(email: string, actorUserId: string): Promise<InviteResult> {
+  private async issueInvite(email: string, actorUserId: string, roles: Role[]): Promise<InviteResult> {
     const token = randomBytes(RAW_TOKEN_BYTES).toString('base64url');
     const tokenHash = hashInviteToken(token);
     const expiresAt = new Date(this.now().getTime() + INVITE_TTL_MS);
@@ -321,7 +353,14 @@ export class InviteService {
         invitedByUserId: actorUserId,
         expiresAt,
         usedAt: null,
+        roles: { create: roles.map((role) => ({ role })) },
       },
+    });
+    const delivery = await this.emailSender.sendInviteEmail({
+      to: email,
+      signupUrl: `${this.appOrigin.replace(/\/$/, '')}/signup?token=${encodeURIComponent(token)}`,
+      expiresAt,
+      roles,
     });
 
     return {
@@ -329,7 +368,13 @@ export class InviteService {
       email: invite.email,
       expiresAt: invite.expiresAt,
       token,
+      roles,
+      delivery,
     };
+  }
+
+  private inviteRoles(invite: StoredInviteToken): Role[] {
+    return normalizeRoles((invite.roles ?? []).map((row) => row.role));
   }
 }
 
@@ -339,6 +384,17 @@ function normalizeEmail(email: string): string {
 
 function normalizeLoginId(loginId: string): string {
   return loginId.trim().toLowerCase();
+}
+
+function normalizeRoles(roles: readonly Role[]): Role[] {
+  const unique = Array.from(new Set(roles));
+  if (unique.length === 0) {
+    throw new DomainRuleError('INVALID_INVITE_ROLES', 'At least one role is required', 400);
+  }
+  if (!unique.every((role) => VALID_ROLES.includes(role))) {
+    throw new DomainRuleError('INVALID_INVITE_ROLES', 'roles contains an invalid value', 400);
+  }
+  return unique;
 }
 
 function loginIdAlreadyExists(): DomainRuleError {
