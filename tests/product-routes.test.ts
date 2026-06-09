@@ -74,10 +74,10 @@ describe('product routes', () => {
     await server.close();
   });
 
-  it('creates product and returns 201 with P-PREFIX-NNN id', async () => {
+  it('creates product and returns 201 with KODY-owned product id even without artist', async () => {
     const actor = buildActor();
-    const product = buildStoredProduct();
-    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()], createdProduct: product });
+    const product = buildStoredProduct({ id: 'KODY-PROD-000001', artistId: null, category: null, weightG: null });
+    const prisma = buildPrisma({ actor, createdProduct: product, nextProductSeq: 1 });
     const server = buildTestServer(prisma);
     await server.ready();
 
@@ -85,13 +85,13 @@ describe('product routes', () => {
       method: 'POST',
       url: '/products',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
-      payload: validCreatePayload(),
+      payload: validCreatePayload({ artistId: undefined, category: undefined, weightG: undefined }),
     });
     const body = response.json();
 
     expect(response.statusCode).toBe(201);
     expect(body.ok).toBe(true);
-    expect(body.data.id).toMatch(/^P-[A-Z]+-\d{3}$/);
+    expect(body.data.id).toBe('KODY-PROD-000001');
 
     await server.close();
   });
@@ -387,14 +387,19 @@ describe('product routes', () => {
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
-function validCreatePayload() {
-  return {
+function validCreatePayload(overrides: Partial<Record<'artistId' | 'category' | 'weightG', unknown>> = {}) {
+  const payload: Record<string, unknown> = {
     artistId: ARTIST_ID,
     category: 'ALBUM' as ProductCategory,
     name: 'Standard Album',
     weightG: 150,
     priceKRW: 15000,
+    ...overrides,
   };
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) delete payload[key];
+  }
+  return payload;
 }
 
 function issueToken(userId: string, roles: Role[]): string {
@@ -432,14 +437,14 @@ function buildStoredArtist(overrides: Partial<{ id: string; name: string }> = {}
 }
 
 function buildStoredProduct(overrides: Partial<{
-  id: string; name: string; category: ProductCategory;
+  id: string; name: string; artistId: string | null; category: ProductCategory | null; weightG: number | null;
 }> = {}) {
   return {
     id: overrides.id ?? PRODUCT_ID,
-    artistId: ARTIST_ID,
-    category: (overrides.category ?? 'ALBUM') as ProductCategory,
+    artistId: overrides.artistId === undefined ? ARTIST_ID : overrides.artistId,
+    category: overrides.category === undefined ? 'ALBUM' as ProductCategory : overrides.category,
     name: overrides.name ?? 'Standard Album',
-    weightG: 150,
+    weightG: overrides.weightG === undefined ? 150 : overrides.weightG,
     priceKRW: 15000,
     sku: null,
     barcode: null,
@@ -474,6 +479,7 @@ interface PrismaInput {
   createdProduct?: ReturnType<typeof buildStoredProduct>;
   updatedProduct?: ReturnType<typeof buildStoredProduct>;
   createdMovement?: ReturnType<typeof buildStoredMovement>;
+  nextProductSeq?: number;
 }
 
 function buildPrisma(input: PrismaInput) {
@@ -510,6 +516,9 @@ function buildPrisma(input: PrismaInput) {
         return products.slice(0, take);
       }),
       update: vi.fn(async () => input.updatedProduct ?? products[0]),
+    },
+    productSequence: {
+      upsert: vi.fn(async () => ({ key: 'KODY-PROD', lastSeq: input.nextProductSeq ?? 1 })),
     },
     stockMovement: {
       create: vi.fn(async () => {

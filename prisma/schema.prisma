@@ -55,6 +55,50 @@ enum ProductCategory {
   GOODS
 }
 
+enum SourceSystem {
+  IMWEB_KR
+  SHOPIFY
+  CAFE24
+  MANUAL
+}
+
+enum MappingStatus {
+  ACTIVE
+  ORPHANED
+  CONFLICTING
+}
+
+enum ProductSaleStatus {
+  ON_SALE
+  OFF_SALE
+  SOLD_OUT
+  DRAFT
+}
+
+enum CategoryReviewStatus {
+  PENDING
+  MAPPED
+  NEEDS_REVIEW
+}
+
+enum ImportBatchStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ImportRowOutcome {
+  PENDING
+  CREATED
+  UPDATED
+  UNCHANGED
+  SKIPPED
+  NEEDS_REVIEW
+  FAILED
+}
+
 enum Incoterm {
   EXW
   FOB
@@ -318,30 +362,167 @@ model Artist {
   products Product[]
 }
 
-/// Product ID follows business format: P-ARTIST-NNN
+/// Product ID is KODY-owned. Existing P-ARTIST-NNN IDs are preserved; new products use KODY-PROD-NNNNNN.
 model Product {
-  id          String          @id // Business ID: P-ARTIST-NNN
-  artistId    String
-  category    ProductCategory
-  name        String
-  weightG     Int
-  priceKRW    Int
-  sku                 String?  @unique
-  barcode             String?  @unique
-  avgPurchasePriceKRW Int      @default(0)
-  orderBasedStock     Int      @default(0)
-  shipmentBasedStock  Int      @default(0)
-  stockOnHand Int             @default(0)
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  id String @id
+
+  artistId String?
+  artist   Artist? @relation(fields: [artistId], references: [id], onDelete: Restrict)
+
+  category             ProductCategory?
+  categoryReviewStatus CategoryReviewStatus @default(PENDING)
+  sourceCategoryCodes  String[]             @default([])
+
+  name         String
+  labelName    String?
+  thumbnailUrl String?
+
+  weightG  Int?
+  priceKRW Int
+
+  sku     String?
+  barcode String?
+
+  saleStatus  ProductSaleStatus @default(DRAFT)
+  isDisplayed Boolean           @default(false)
+
+  stockManaged Boolean @default(true)
+  stockOnHand  Int     @default(0)
+
+  releaseDateText String?
+  releaseDate     DateTime?
+  detailHtml      String? @db.Text
+
+  avgPurchasePriceKRW Int @default(0)
+  orderBasedStock     Int @default(0)
+  shipmentBasedStock  Int @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   // Relations
-  artist         Artist          @relation(fields: [artistId], references: [id])
-  stockMovements StockMovement[]
-  orderItems     OrderItem[]
-  shipmentItems  ShipmentItem[]
+  stockMovements   StockMovement[]
+  orderItems       OrderItem[]
+  shipmentItems    ShipmentItem[]
+  externalMappings ProductExternalMapping[]
+  options          ProductOption[]
 
   @@index([artistId])
+  @@index([category])
+  @@index([sku])
+  @@index([barcode])
+  @@index([saleStatus])
+}
+
+model ProductExternalMapping {
+  id String @id @default(cuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  sourceSystem      SourceSystem
+  externalProductId String
+  externalUrl       String?
+
+  firstSeenAt     DateTime @default(now())
+  lastSyncedAt    DateTime @default(now())
+  sourceUpdatedAt DateTime?
+
+  firstImportBatchId String?
+  lastImportBatchId  String?
+  lastRawHash        String?
+
+  status MappingStatus @default(ACTIVE)
+
+  @@unique([sourceSystem, externalProductId])
+  @@index([productId])
+  @@index([sourceSystem, lastSyncedAt])
+}
+
+model ProductSequence {
+  key     String @id
+  lastSeq Int    @default(0)
+}
+
+model ProductOption {
+  id String @id @default(cuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  name     String
+  position Int    @default(0)
+
+  values ProductOptionValue[]
+
+  @@index([productId])
+}
+
+model ProductOptionValue {
+  id String @id @default(cuid())
+
+  optionId String
+  option   ProductOption @relation(fields: [optionId], references: [id])
+
+  value         String
+  position      Int @default(0)
+  priceDeltaKRW Int @default(0)
+  stockSnapshot Int?
+
+  @@index([optionId])
+}
+
+model ImportBatch {
+  id String @id @default(cuid())
+
+  sourceSystem   SourceSystem
+  sourceFileName String?
+  sourceFileHash String?
+
+  status   ImportBatchStatus @default(PENDING)
+  isDryRun Boolean           @default(true)
+
+  totalRows       Int @default(0)
+  createdRows     Int @default(0)
+  updatedRows     Int @default(0)
+  unchangedRows   Int @default(0)
+  failedRows      Int @default(0)
+  needsReviewRows Int @default(0)
+
+  triggeredBy String?
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  rows ImportRow[]
+
+  @@index([sourceSystem, startedAt])
+}
+
+model ImportRow {
+  id String @id @default(cuid())
+
+  batchId String
+  batch   ImportBatch @relation(fields: [batchId], references: [id])
+
+  sourceSystem SourceSystem
+  rowIndex     Int
+
+  externalProductId String
+  rawHash           String
+  rawPayload        Json
+
+  outcome ImportRowOutcome @default(PENDING)
+
+  productId String?
+  mappingId String?
+
+  errorMessage String?
+  createdAt    DateTime @default(now())
+
+  @@unique([batchId, rowIndex])
+  @@unique([batchId, externalProductId])
+  @@index([sourceSystem, externalProductId, rawHash])
+  @@index([outcome])
 }
 
 model StockMovement {

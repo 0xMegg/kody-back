@@ -1,0 +1,330 @@
+import type { ProductCategory } from '@/domain/shared/types.js';
+
+export type ImwebDryRunStatus = 'create' | 'update' | 'skip' | 'conflict' | 'fail';
+export type ImwebConflictReason = 'existing' | 'duplicate_in_file';
+
+export interface ImwebValidationIssue {
+  field: string;
+  message: string;
+}
+
+export interface ImwebConflict {
+  field: 'externalProductId';
+  value: string;
+  reason: ImwebConflictReason;
+}
+
+export interface ImwebMappedProduct {
+  externalProductId: string;
+  name: string;
+  category: ProductCategory;
+  artistName: string;
+  priceKRW: number;
+  weightG: number;
+  sku: string | null;
+  barcode: string | null;
+  stockOnHand: number;
+  avgPurchasePriceKRW: number;
+  optionName: string | null;
+  optionValues: string[];
+  rawCategoryIds: string[];
+  saleStatus: string | null;
+  displayStatus: boolean;
+  productUrl: string | null;
+  thumbnailUrl: string | null;
+}
+
+export interface ImwebDryRunItem {
+  rowNumber: number;
+  status: ImwebDryRunStatus;
+  mapped: ImwebMappedProduct | null;
+  errors: ImwebValidationIssue[];
+  warnings: ImwebValidationIssue[];
+  conflicts: ImwebConflict[];
+}
+
+export interface DryRunImwebProductRowsOptions {
+  existingExternalProductIds?: ReadonlySet<string>;
+  existingSkus?: ReadonlySet<string>;
+  existingBarcodes?: ReadonlySet<string>;
+}
+
+export interface DryRunImwebProductRowsResult {
+  summary: Record<ImwebDryRunStatus, number> & { totalRows: number };
+  items: ImwebDryRunItem[];
+}
+
+const CATEGORY_BY_IMWEB_CATEGORY_ID_PREFIX: readonly [RegExp, ProductCategory][] = [
+  [/CATE(?:10|14|21|44|48|64|65|70)\b/, 'ALBUM'],
+  [/CATE(?:29)\b/, 'GOODS'],
+];
+
+export function parseImwebProductRow(
+  row: Record<string, unknown>,
+  rowNumber: number,
+): ImwebDryRunItem {
+  const errors: ImwebValidationIssue[] = [];
+  const warnings: ImwebValidationIssue[] = [];
+
+  const externalProductId = readRequiredString(row, '상품번호', errors);
+  const name = readRequiredString(row, '상품명', errors);
+  const rawCategoryIds = parseCategoryIds(readOptionalString(row, '카테고리ID'));
+  const category = mapProductCategory(rawCategoryIds, warnings);
+  const priceKRW = readNonNegativeInteger(row, '판매가', errors);
+  const weightG = readNonNegativeInteger(row, '무게', errors);
+  const avgPurchasePriceKRW = readNonNegativeInteger(row, '원가', errors, { defaultValue: 0 });
+  const sku = readOptionalString(row, '재고번호SKU') ?? readOptionalString(row, '자체 상품코드');
+  const barcode = normalizeBarcode(
+    readOptionalString(row, '원산지') ?? readOptionalString(row, '자체 상품코드'),
+    warnings,
+  );
+  const artistName = readOptionalString(row, '브랜드') ?? 'UNKNOWN';
+  const inventoryEnabled = parseYn(row, '재고사용', false, warnings);
+  const stockOnHand = inventoryEnabled
+    ? readNonNegativeInteger(row, '현재 재고수량', errors, { defaultValue: 0 })
+    : 0;
+  const optionEnabled = parseYn(row, '옵션사용', false, warnings);
+  const optionName = optionEnabled ? readOptionalString(row, '필수옵션명') : null;
+  const optionValues = optionEnabled ? parseOptionValues(readOptionalString(row, '필수옵션값')) : [];
+
+  if (optionEnabled && !optionName) {
+    warnings.push({ field: '필수옵션명', message: '옵션사용=Y 이지만 필수옵션명이 비어있습니다.' });
+  }
+  if (optionEnabled && optionValues.length === 0) {
+    warnings.push({ field: '필수옵션값', message: '옵션사용=Y 이지만 필수옵션값이 비어있습니다.' });
+  }
+
+  if (errors.length > 0) {
+    return { rowNumber, status: 'fail', mapped: null, errors, warnings, conflicts: [] };
+  }
+
+  return {
+    rowNumber,
+    status: 'create',
+    mapped: {
+      externalProductId: externalProductId!,
+      name: name!,
+      category,
+      artistName,
+      priceKRW: priceKRW!,
+      weightG: weightG!,
+      sku,
+      barcode,
+      stockOnHand: stockOnHand!,
+      avgPurchasePriceKRW: avgPurchasePriceKRW!,
+      optionName,
+      optionValues,
+      rawCategoryIds,
+      saleStatus: readOptionalString(row, '판매상태'),
+      displayStatus: parseYn(row, '진열상태', false, warnings),
+      productUrl: readOptionalString(row, '상품URL'),
+      thumbnailUrl: readOptionalString(row, '대표이미지URL'),
+    },
+    errors,
+    warnings,
+    conflicts: [],
+  };
+}
+
+export function dryRunImwebProductRows(
+  rows: readonly Record<string, unknown>[],
+  options: DryRunImwebProductRowsOptions = {},
+): DryRunImwebProductRowsResult {
+  const seenExternalProductIds = new Set<string>();
+  const seenSkus = new Set<string>();
+  const seenBarcodes = new Set<string>();
+  const items = rows.map((row, index) => {
+    const item = parseImwebProductRow(row, index + 2);
+    if (!item.mapped) {
+      return item;
+    }
+
+    const conflicts: ImwebConflict[] = [];
+    appendExternalProductIdConflict(
+      conflicts,
+      item.mapped.externalProductId,
+      seenExternalProductIds,
+    );
+    appendSearchAidWarning(item.warnings, 'sku', item.mapped.sku, seenSkus, options.existingSkus);
+    appendSearchAidWarning(
+      item.warnings,
+      'barcode',
+      item.mapped.barcode,
+      seenBarcodes,
+      options.existingBarcodes,
+    );
+
+    seenExternalProductIds.add(item.mapped.externalProductId);
+    if (item.mapped.sku) seenSkus.add(item.mapped.sku);
+    if (item.mapped.barcode) seenBarcodes.add(item.mapped.barcode);
+
+    if (conflicts.length > 0) {
+      return { ...item, status: 'conflict' as const, conflicts };
+    }
+
+    const status = options.existingExternalProductIds?.has(item.mapped.externalProductId)
+      ? 'update'
+      : item.status;
+    return { ...item, status };
+  });
+
+  return {
+    summary: summarize(items),
+    items,
+  };
+}
+
+function readRequiredString(
+  row: Record<string, unknown>,
+  field: string,
+  errors: ImwebValidationIssue[],
+): string | null {
+  const value = readOptionalString(row, field);
+  if (!value) {
+    errors.push({ field, message: `${field}${subjectParticle(field)} 비어있습니다.` });
+    return null;
+  }
+  return value;
+}
+
+function readOptionalString(row: Record<string, unknown>, field: string): string | null {
+  const value = row[field];
+  if (value == null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readNonNegativeInteger(
+  row: Record<string, unknown>,
+  field: string,
+  errors: ImwebValidationIssue[],
+  options: { defaultValue?: number } = {},
+): number | null {
+  const value = row[field];
+  if ((value == null || value === '') && options.defaultValue !== undefined) {
+    return options.defaultValue;
+  }
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number(value.replace(/,/g, '').trim())
+        : Number.NaN;
+  if (!Number.isInteger(numeric) || numeric < 0) {
+    errors.push({ field, message: `${field}가 0 이상의 정수여야 합니다.` });
+    return null;
+  }
+  return numeric;
+}
+
+function parseCategoryIds(value: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function mapProductCategory(
+  categoryIds: readonly string[],
+  warnings: ImwebValidationIssue[],
+): ProductCategory {
+  const joined = categoryIds.join(',');
+  for (const [pattern, category] of CATEGORY_BY_IMWEB_CATEGORY_ID_PREFIX) {
+    if (pattern.test(joined)) return category;
+  }
+  warnings.push({
+    field: '카테고리ID',
+    message: 'KODY 상품 카테고리로 명확히 매핑되지 않아 GOODS로 dry-run 처리합니다.',
+  });
+  return 'GOODS';
+}
+
+function normalizeBarcode(
+  value: string | null,
+  warnings: ImwebValidationIssue[],
+): string | null {
+  if (!value) return null;
+  const normalized = value.replace(/[\s-]/g, '');
+  if (!/^\d{8,14}$/.test(normalized)) {
+    warnings.push({ field: '원산지', message: '바코드 후보가 EAN/UPC 숫자 형식이 아닙니다.' });
+    return value;
+  }
+  return normalized;
+}
+
+function parseYn(
+  row: Record<string, unknown>,
+  field: string,
+  defaultValue: boolean,
+  warnings: ImwebValidationIssue[],
+): boolean {
+  const value = readOptionalString(row, field);
+  if (value === 'Y') return true;
+  if (value === 'N') return false;
+  if (value != null) {
+    warnings.push({ field, message: `${field} 값이 Y/N이 아니어서 기본값으로 처리합니다.` });
+  }
+  return defaultValue;
+}
+
+function parseOptionValues(value: string | null): string[] {
+  if (!value) return [];
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const part of value.split(',')) {
+    const normalized = part.trim().replace(/\s+/g, ' ');
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    values.push(normalized);
+  }
+  return values;
+}
+
+function appendExternalProductIdConflict(
+  conflicts: ImwebConflict[],
+  value: string,
+  seen: ReadonlySet<string>,
+): void {
+  if (seen.has(value)) {
+    conflicts.push({ field: 'externalProductId', value, reason: 'duplicate_in_file' });
+  }
+}
+
+function appendSearchAidWarning(
+  warnings: ImwebValidationIssue[],
+  field: 'sku' | 'barcode',
+  value: string | null,
+  seen: ReadonlySet<string>,
+  existing?: ReadonlySet<string>,
+): void {
+  if (!value) return;
+  if (existing?.has(value)) {
+    warnings.push({
+      field,
+      message: `이미 존재하는 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
+    });
+  }
+  if (seen.has(value)) {
+    warnings.push({
+      field,
+      message: `파일 안에서 중복된 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
+    });
+  }
+}
+
+function summarize(items: readonly ImwebDryRunItem[]): DryRunImwebProductRowsResult['summary'] {
+  const summary = { totalRows: items.length, create: 0, update: 0, skip: 0, conflict: 0, fail: 0 };
+  for (const item of items) {
+    summary[item.status] += 1;
+  }
+  return summary;
+}
+
+function subjectParticle(value: string): '이' | '가' {
+  const last = value.charCodeAt(value.length - 1);
+  if (last < 0xac00 || last > 0xd7a3) return '가';
+  return (last - 0xac00) % 28 === 0 ? '가' : '이';
+}

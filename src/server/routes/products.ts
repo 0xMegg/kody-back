@@ -134,13 +134,22 @@ function parseCreateBody(body: unknown): CreateBody {
     throw new ValidationError('Request body must be an object');
   }
 
-  const artistId = parseRequiredString(body.artistId, 'artistId');
-  const category = parseCategory(body.category);
   const name = parseRequiredString(body.name, 'name');
-  const weightG = parseNonNegativeInteger(body.weightG, 'weightG');
   const priceKRW = parseNonNegativeInteger(body.priceKRW, 'priceKRW');
 
-  const result: CreateBody = { artistId, category, name, weightG, priceKRW };
+  const result: CreateBody = { name, priceKRW };
+
+  if (body.artistId !== undefined) {
+    result.artistId = parseRequiredString(body.artistId, 'artistId');
+  }
+
+  if (body.category !== undefined) {
+    result.category = parseCategory(body.category);
+  }
+
+  if (body.weightG !== undefined) {
+    result.weightG = parseNonNegativeInteger(body.weightG, 'weightG');
+  }
 
   if (body.sku !== undefined && body.sku !== null) {
     result.sku = parseRequiredString(body.sku, 'sku');
