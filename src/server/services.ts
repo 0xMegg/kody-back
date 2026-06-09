@@ -11,6 +11,7 @@ import {
 } from '@/application/auth/invite-email-sender.js';
 import { PasswordResetService } from '@/application/auth/password-reset-service.js';
 import { ActionLogQueryService } from '@/application/logs/action-log-query-service.js';
+import { OrderService } from '@/application/order/order-service.js';
 import { ProductService } from '@/application/product/product-service.js';
 import { PaymentService } from '@/application/payment/payment-service.js';
 import { ActionLogWriter } from '@/application/shared/action-log-writer.js';
@@ -25,6 +26,7 @@ export interface ServerServices {
   invites: InviteService;
   logs: ActionLogQueryService;
   passwordReset: PasswordResetService;
+  orders: OrderService;
   products: ProductService;
   payments: PaymentService;
 }
@@ -60,6 +62,7 @@ export function buildServerServices(
     invites: new InviteService(prisma as never, undefined, inviteEmailSender, config.appOrigin),
     logs: new ActionLogQueryService(prisma as never),
     passwordReset: new PasswordResetService(prisma as never),
+    orders: new OrderService(prisma as never, actionLogWriter),
     products: new ProductService(prisma as never, actionLogWriter),
     payments: new PaymentService(prisma as never, actionLogWriter),
   };

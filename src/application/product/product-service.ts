@@ -1,6 +1,7 @@
 import { DomainRuleError } from '@/domain/shared/errors.js';
 import type { ProductCategory, StockMovementType } from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
+import type { ImwebMappedProduct } from '@/application/product/imweb-product-importer.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
 
@@ -17,10 +18,10 @@ export interface ArtistSummary {
 
 export interface ProductSummary {
   id: string;
-  artistId: string;
-  category: ProductCategory;
+  artistId: string | null;
+  category: ProductCategory | null;
   name: string;
-  weightG: number;
+  weightG: number | null;
   priceKRW: number;
   sku: string | null;
   barcode: string | null;
@@ -49,10 +50,10 @@ export interface CreateArtistInput {
 
 export interface CreateProductInput {
   actorUserId: string;
-  artistId: string;
-  category: ProductCategory;
+  artistId?: string;
+  category?: ProductCategory;
   name: string;
-  weightG: number;
+  weightG?: number;
   priceKRW: number;
   sku?: string;
   barcode?: string;
@@ -105,6 +106,20 @@ export interface AdjustInput {
   userAgent?: string;
 }
 
+export interface UpsertImwebProductInput {
+  actorUserId: string;
+  mapped: ImwebMappedProduct;
+  importBatchId?: string;
+  rawHash?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export interface UpsertImwebProductResult {
+  status: 'create' | 'update';
+  product: ProductSummary;
+}
+
 interface StoredArtist {
   id: string;
   name: string;
@@ -114,10 +129,10 @@ interface StoredArtist {
 
 interface StoredProduct {
   id: string;
-  artistId: string;
-  category: ProductCategory;
+  artistId: string | null;
+  category: ProductCategory | null;
   name: string;
-  weightG: number;
+  weightG: number | null;
   priceKRW: number;
   sku: string | null;
   barcode: string | null;
@@ -139,6 +154,13 @@ interface StoredStockMovement {
   createdAt: Date;
 }
 
+interface StoredProductExternalMapping {
+  id: string;
+  productId: string;
+  sourceSystem: string;
+  externalProductId: string;
+}
+
 interface ProductRepository {
   artist: {
     create(args: { data: Record<string, unknown> }): Promise<StoredArtist>;
@@ -154,7 +176,7 @@ interface ProductRepository {
     }): Promise<StoredProduct | null>;
     findFirst(args: {
       where: Record<string, unknown>;
-      orderBy: { id: 'asc' | 'desc' };
+      orderBy?: { id: 'asc' | 'desc' };
     }): Promise<StoredProduct | null>;
     findMany(args: {
       where?: Record<string, unknown>;
@@ -167,6 +189,20 @@ interface ProductRepository {
       where: { id: string };
       data: Record<string, unknown>;
     }): Promise<StoredProduct>;
+  };
+  productExternalMapping: {
+    findUnique(args: {
+      where: { sourceSystem_externalProductId: { sourceSystem: string; externalProductId: string } };
+    }): Promise<StoredProductExternalMapping | null>;
+    create(args: { data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
+    update(args: { where: { id: string }; data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
+  };
+  productSequence: {
+    upsert(args: {
+      where: { key: string };
+      create: { key: string; lastSeq: number };
+      update: { lastSeq: { increment: number } };
+    }): Promise<{ key: string; lastSeq: number }>;
   };
   stockMovement: {
     create(args: { data: Record<string, unknown> }): Promise<StoredStockMovement>;
@@ -213,10 +249,10 @@ export class ProductService {
   // ── Products ───────────────────────────────────────────────────────────────
 
   async createProduct(input: CreateProductInput): Promise<ProductSummary> {
-    const artistId = normalizeRequiredString(input.artistId, 'artistId');
-    const category = normalizeCategory(input.category);
+    const artistId = input.artistId === undefined ? undefined : normalizeRequiredString(input.artistId, 'artistId');
+    const category = input.category === undefined ? undefined : normalizeCategory(input.category);
     const name = normalizeRequiredString(input.name, 'name');
-    const weightG = normalizeNonNegativeInteger(input.weightG, 'weightG');
+    const weightG = input.weightG === undefined ? undefined : normalizeNonNegativeInteger(input.weightG, 'weightG');
     const priceKRW = normalizeNonNegativeInteger(input.priceKRW, 'priceKRW');
     const sku = input.sku === undefined ? undefined : normalizeOptionalString(input.sku);
     const barcode =
@@ -226,7 +262,9 @@ export class ProductService {
         ? 0
         : normalizeNonNegativeInteger(input.avgPurchasePriceKRW, 'avgPurchasePriceKRW');
 
-    const artist = await this.findArtist(artistId);
+    if (artistId !== undefined) {
+      await this.findArtist(artistId);
+    }
 
     if (sku) {
       await this.assertSkuAvailable(sku);
@@ -235,15 +273,15 @@ export class ProductService {
       await this.assertBarcodeAvailable(barcode);
     }
 
-    const productId = await this.generateProductId(artist);
+    const productId = await this.generateProductId();
 
     const created = await this.repository.product.create({
       data: {
         id: productId,
-        artistId: artist.id,
-        category,
+        ...(artistId !== undefined ? { artistId } : {}),
+        ...(category !== undefined ? { category } : {}),
         name,
-        weightG,
+        ...(weightG !== undefined ? { weightG } : {}),
         priceKRW,
         avgPurchasePriceKRW,
         ...(sku !== undefined ? { sku } : {}),
@@ -405,6 +443,77 @@ export class ProductService {
     return toProductSummary(updated);
   }
 
+  async upsertImwebProduct(input: UpsertImwebProductInput): Promise<UpsertImwebProductResult> {
+    const externalProductId = normalizeRequiredString(input.mapped.externalProductId, 'externalProductId');
+    const mapping = await this.repository.productExternalMapping.findUnique({
+      where: {
+        sourceSystem_externalProductId: {
+          sourceSystem: 'IMWEB_KR',
+          externalProductId,
+        },
+      },
+    });
+    const productData = toImwebProductWriteData(input.mapped);
+
+    if (mapping) {
+      const current = await this.findProduct(mapping.productId);
+      const updated = await this.repository.product.update({
+        where: { id: current.id },
+        data: productData,
+      });
+
+      await this.repository.productExternalMapping.update({
+        where: { id: mapping.id },
+        data: toImwebMappingRefreshData(input),
+      });
+
+      await this.actionLogWriter.write({
+        actorUserId: input.actorUserId,
+        actionType: 'PRODUCT_UPDATE',
+        targetType: 'Product',
+        targetId: updated.id,
+        beforeJson: toProductAuditPayload(current),
+        afterJson: toProductAuditPayload(updated),
+        metadataJson: { sourceSystem: 'IMWEB_KR', externalProductId, importBatchId: input.importBatchId ?? null },
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+      });
+
+      return { status: 'update', product: toProductSummary(updated) };
+    }
+
+    const productId = await this.generateProductId();
+    const created = await this.repository.product.create({
+      data: {
+        id: productId,
+        ...productData,
+      },
+    });
+
+    await this.repository.productExternalMapping.create({
+      data: {
+        productId: created.id,
+        sourceSystem: 'IMWEB_KR',
+        externalProductId,
+        ...toImwebMappingRefreshData(input),
+        firstImportBatchId: input.importBatchId ?? null,
+      },
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'PRODUCT_CREATE',
+      targetType: 'Product',
+      targetId: created.id,
+      afterJson: toProductAuditPayload(created),
+      metadataJson: { sourceSystem: 'IMWEB_KR', externalProductId, importBatchId: input.importBatchId ?? null },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+
+    return { status: 'create', product: toProductSummary(created) };
+  }
+
   // ── Stock ──────────────────────────────────────────────────────────────────
 
   async inbound(input: InboundInput): Promise<StockMovementSummary> {
@@ -528,49 +637,30 @@ export class ProductService {
   }
 
   private async assertSkuAvailable(sku: string, exceptProductId?: string): Promise<void> {
-    const existing = await this.repository.product.findUnique({ where: { sku } });
+    const existing = await this.repository.product.findFirst({ where: { sku } });
     if (existing && existing.id !== exceptProductId) {
       throw new DomainRuleError('DUPLICATE_SKU', 'sku is already in use', 409);
     }
   }
 
   private async assertBarcodeAvailable(barcode: string, exceptProductId?: string): Promise<void> {
-    const existing = await this.repository.product.findUnique({ where: { barcode } });
+    const existing = await this.repository.product.findFirst({ where: { barcode } });
     if (existing && existing.id !== exceptProductId) {
       throw new DomainRuleError('DUPLICATE_BARCODE', 'barcode is already in use', 409);
     }
   }
 
-  private async generateProductId(artist: StoredArtist): Promise<string> {
-    const prefix = buildProductPrefix(artist.name);
-    const idPrefix = `P-${prefix}-`;
-
-    const last = await this.repository.product.findFirst({
-      where: { artistId: artist.id, id: { startsWith: idPrefix } },
-      orderBy: { id: 'desc' },
+  private async generateProductId(): Promise<string> {
+    const sequence = await this.repository.productSequence.upsert({
+      where: { key: 'KODY-PROD' },
+      create: { key: 'KODY-PROD', lastSeq: 1 },
+      update: { lastSeq: { increment: 1 } },
     });
 
-    let nextSeq = 1;
-    if (last) {
-      const suffix = last.id.slice(idPrefix.length);
-      const parsed = Number.parseInt(suffix, 10);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        nextSeq = parsed + 1;
-      }
-    }
-
-    return `${idPrefix}${String(nextSeq).padStart(3, '0')}`;
+    return `KODY-PROD-${String(sequence.lastSeq).padStart(6, '0')}`;
   }
 }
 
-function buildProductPrefix(name: string): string {
-  const trimmed = name.trim();
-  if (trimmed.length === 0) {
-    throw new DomainRuleError('VALIDATION_ERROR', 'artist name is required to derive prefix', 400);
-  }
-  const slice = trimmed.length >= 4 ? trimmed.slice(0, 4) : trimmed;
-  return slice.toUpperCase();
-}
 
 function normalizeRequiredString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -623,6 +713,40 @@ function normalizeQuantity(value: unknown): number {
   }
 
   return value;
+}
+
+function toImwebProductWriteData(mapped: ImwebMappedProduct): Record<string, unknown> {
+  return {
+    category: mapped.category,
+    sourceCategoryCodes: mapped.rawCategoryIds,
+    name: mapped.name,
+    labelName: normalizeOptionalString(mapped.artistName) ?? null,
+    thumbnailUrl: normalizeOptionalString(mapped.thumbnailUrl) ?? null,
+    weightG: mapped.weightG,
+    priceKRW: mapped.priceKRW,
+    sku: normalizeOptionalString(mapped.sku) ?? null,
+    barcode: normalizeOptionalString(mapped.barcode) ?? null,
+    stockOnHand: mapped.stockOnHand,
+    avgPurchasePriceKRW: mapped.avgPurchasePriceKRW,
+    saleStatus: toProductSaleStatus(mapped.saleStatus),
+    isDisplayed: mapped.displayStatus,
+  };
+}
+
+function toImwebMappingRefreshData(input: UpsertImwebProductInput): Record<string, unknown> {
+  return {
+    externalUrl: normalizeOptionalString(input.mapped.productUrl) ?? null,
+    lastImportBatchId: input.importBatchId ?? null,
+    lastRawHash: input.rawHash ?? null,
+    status: 'ACTIVE',
+  };
+}
+
+function toProductSaleStatus(value: string | null): 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT' {
+  if (value === '판매중') return 'ON_SALE';
+  if (value === '품절') return 'SOLD_OUT';
+  if (value === '판매안함' || value === '판매중지') return 'OFF_SALE';
+  return 'DRAFT';
 }
 
 function normalizeListLimit(value: unknown): number {
