@@ -1,7 +1,7 @@
 import { DomainRuleError } from '@/domain/shared/errors.js';
 import type { ProductCategory, StockMovementType } from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
-import type { ImwebMappedProduct, ImwebProductPriceStatus } from '@/application/product/imweb-product-importer.js';
+import type { ImwebMappedProduct, ImwebProductPriceStatus, ImwebWarningIssue } from '@/application/product/imweb-product-importer.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
 
@@ -116,6 +116,11 @@ export interface UpsertImwebProductInput {
   actorUserId: string;
   mapped: ImwebMappedProduct;
   importBatchId?: string;
+  importRow?: {
+    rowIndex: number;
+    rawPayload: Record<string, unknown>;
+    warnings?: readonly ImwebWarningIssue[];
+  };
   rawHash?: string;
   ipAddress?: string;
   userAgent?: string;
@@ -206,6 +211,9 @@ interface ProductRepository {
     }): Promise<StoredProductExternalMapping | null>;
     create(args: { data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
     update(args: { where: { id: string }; data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
+  };
+  importRow: {
+    create(args: { data: Record<string, unknown> }): Promise<Record<string, unknown>>;
   };
   productSequence: {
     upsert(args: {
@@ -481,9 +489,15 @@ export class ProductService {
         data: productData,
       });
 
-      await this.repository.productExternalMapping.update({
+      const refreshedMapping = await this.repository.productExternalMapping.update({
         where: { id: mapping.id },
         data: toImwebMappingRefreshData(input),
+      });
+
+      await this.writeImwebImportRow(input, {
+        productId: updated.id,
+        mappingId: refreshedMapping.id,
+        outcome: 'UPDATED',
       });
 
       await this.actionLogWriter.write({
@@ -510,7 +524,7 @@ export class ProductService {
       },
     });
 
-    await this.repository.productExternalMapping.create({
+    const createdMapping = await this.repository.productExternalMapping.create({
       data: {
         productId: created.id,
         sourceSystem: 'IMWEB_KR',
@@ -518,6 +532,12 @@ export class ProductService {
         ...toImwebMappingRefreshData(input),
         firstImportBatchId: input.importBatchId ?? null,
       },
+    });
+
+    await this.writeImwebImportRow(input, {
+      productId: created.id,
+      mappingId: createdMapping.id,
+      outcome: 'CREATED',
     });
 
     await this.actionLogWriter.write({
@@ -635,6 +655,40 @@ export class ProductService {
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────
+
+  private async writeImwebImportRow(
+    input: UpsertImwebProductInput,
+    result: { productId: string; mappingId: string; outcome: 'CREATED' | 'UPDATED' },
+  ): Promise<void> {
+    if (!input.importBatchId || !input.importRow) return;
+
+    const warnings = [...(input.importRow.warnings ?? [])];
+    const warningCodes = [...new Set(warnings.map((warning) => warning.code))];
+    const reviewRequired = warnings.some(
+      (warning) => warning.severity === 'REVIEW' || warning.scope === 'KODY_REVIEW_REQUIRED',
+    );
+
+    await this.repository.importRow.create({
+      data: {
+        batchId: input.importBatchId,
+        sourceSystem: 'IMWEB_KR',
+        rowIndex: input.importRow.rowIndex,
+        externalProductId: input.mapped.externalProductId,
+        rawHash: input.rawHash ?? '',
+        rawPayload: input.importRow.rawPayload,
+        outcome: reviewRequired ? 'NEEDS_REVIEW' : result.outcome,
+        sourcePriceRaw: input.mapped.sourcePriceRaw,
+        parsedPriceKRW: input.mapped.priceKRW,
+        assignedPriceStatus: input.mapped.priceStatus,
+        priceReviewReason: reviewRequired ? 'Imported row contains warning(s) requiring KODY review.' : null,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        warningCodes,
+        reviewRequired,
+        productId: result.productId,
+        mappingId: result.mappingId,
+      },
+    });
+  }
 
   private async findArtist(artistId: string): Promise<StoredArtist> {
     const artist = await this.repository.artist.findUnique({ where: { id: artistId } });
@@ -759,6 +813,7 @@ function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredPro
   const priceFields = toImwebPriceWriteData(mapped, current);
   return {
     category: mapped.category,
+    categoryMappingSource: mapped.categoryMappingSource,
     sourceCategoryCodes: mapped.rawCategoryIds,
     name: mapped.name,
     labelName: normalizeOptionalString(mapped.artistName) ?? null,

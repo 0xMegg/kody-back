@@ -88,6 +88,12 @@ enum CategoryReviewStatus {
   NEEDS_REVIEW
 }
 
+enum CategoryMappingSource {
+  EXACT
+  FALLBACK
+  MANUAL
+}
+
 enum ImportBatchStatus {
   PENDING
   RUNNING
@@ -376,9 +382,10 @@ model Product {
   artistId String?
   artist   Artist? @relation(fields: [artistId], references: [id], onDelete: Restrict)
 
-  category             ProductCategory?
-  categoryReviewStatus CategoryReviewStatus @default(PENDING)
-  sourceCategoryCodes  String[]             @default([])
+  category              ProductCategory?
+  categoryReviewStatus  CategoryReviewStatus  @default(PENDING)
+  categoryMappingSource CategoryMappingSource @default(EXACT)
+  sourceCategoryCodes   String[]              @default([])
 
   name         String
   labelName    String?
@@ -421,6 +428,7 @@ model Product {
 
   @@index([artistId])
   @@index([category])
+  @@index([categoryMappingSource])
   @@index([sku])
   @@index([barcode])
   @@index([saleStatus])
@@ -532,6 +540,10 @@ model ImportRow {
   assignedPriceStatus ProductPriceStatus?
   priceReviewReason   String?
 
+  warnings       Json?
+  warningCodes   String[] @default([])
+  reviewRequired Boolean  @default(false)
+
   productId String?
   mappingId String?
 
@@ -542,6 +554,7 @@ model ImportRow {
   @@unique([batchId, externalProductId])
   @@index([sourceSystem, externalProductId, rawHash])
   @@index([outcome])
+  @@index([warningCodes], type: Gin)
 }
 
 model StockMovement {

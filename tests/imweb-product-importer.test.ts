@@ -83,10 +83,14 @@ describe('Imweb product dry-run importer', () => {
       priceStatus: 'MISSING',
       sourcePriceRaw: '가격없음',
     });
-    expect(result.warnings).toContainEqual({
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: 'MISSING_PRICE',
+      severity: 'REVIEW',
+      domain: 'PRICE',
+      scope: 'KODY_REVIEW_REQUIRED',
       field: '판매가',
       message: '판매가가 가격없음이므로 가격 검수 필요 상태로 등록합니다.',
-    });
+    }));
   });
 
   it('registers explicit zero Imweb prices as zero-price review instead of confirmed', () => {
@@ -99,10 +103,35 @@ describe('Imweb product dry-run importer', () => {
       priceStatus: 'ZERO_NEEDS_REVIEW',
       sourcePriceRaw: '0',
     });
-    expect(result.warnings).toContainEqual({
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: 'ZERO_PRICE',
+      severity: 'REVIEW',
+      domain: 'PRICE',
+      scope: 'KODY_REVIEW_REQUIRED',
       field: '판매가',
       message: '판매가가 0원이므로 가격 검수 필요 상태로 등록합니다.',
+    }));
+  });
+
+
+
+  it('persists category fallback provenance as a structured warning without failing the row', () => {
+    const result = parseImwebProductRow(validRow({ 카테고리ID: 'CATE999' }), 42);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped).toMatchObject({
+      category: 'GOODS',
+      rawCategoryIds: ['CATE999'],
+      categoryMappingSource: 'FALLBACK',
     });
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: 'CATEGORY_FALLBACK_GOODS',
+      severity: 'WARN',
+      domain: 'CATEGORY',
+      scope: 'SOURCE_DEVIATION',
+      field: '카테고리ID',
+    }));
   });
 
   it('fails rows with missing required values or invalid numeric fields', () => {
@@ -139,9 +168,9 @@ describe('Imweb product dry-run importer', () => {
 
     expect(results.summary).toEqual({ totalRows: 3, create: 3, update: 0, skip: 0, conflict: 0, fail: 0 });
     expect(results.items.every((item) => item.status === 'create')).toBe(true);
-    expect(results.items[0].warnings).toContainEqual({ field: 'barcode', message: '이미 존재하는 바코드입니다. 검색 보조값으로만 유지합니다.' });
-    expect(results.items[1].warnings).toContainEqual({ field: 'sku', message: '파일 안에서 중복된 SKU입니다. 검색 보조값으로만 유지합니다.' });
-    expect(results.items[2].warnings).toContainEqual({ field: 'sku', message: '이미 존재하는 SKU입니다. 검색 보조값으로만 유지합니다.' });
+    expect(results.items[0].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_BARCODE', field: 'barcode', message: '이미 존재하는 바코드입니다. 검색 보조값으로만 유지합니다.' }));
+    expect(results.items[1].warnings).toContainEqual(expect.objectContaining({ code: 'DUPLICATE_SKU_IN_FILE', field: 'sku', message: '파일 안에서 중복된 SKU입니다. 검색 보조값으로만 유지합니다.' }));
+    expect(results.items[2].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_SKU', field: 'sku', message: '이미 존재하는 SKU입니다. 검색 보조값으로만 유지합니다.' }));
   });
 
   it('uses source external product ID for update identity and duplicate-file conflicts', () => {

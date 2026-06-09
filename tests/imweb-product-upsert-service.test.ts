@@ -25,6 +25,7 @@ describe('ProductService Imweb import upsert contract', () => {
       data: expect.objectContaining({
         id: 'KODY-PROD-000001',
         category: 'ALBUM',
+        categoryMappingSource: 'EXACT',
         sourceCategoryCodes: ['CATE70', 'CATE65'],
         name: 'ILLIT Album',
         labelName: 'BELIFT LAB',
@@ -50,6 +51,100 @@ describe('ProductService Imweb import upsert contract', () => {
       }),
     });
   });
+
+
+
+  it('stores category fallback provenance on Product without treating it as an identity conflict', async () => {
+    const repo = buildRepository();
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    const result = await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_category_fallback',
+      rawHash: 'hash-fallback-category',
+      mapped: mappedProduct({
+        externalProductId: '9999',
+        category: 'GOODS',
+        rawCategoryIds: ['CATE999'],
+        categoryMappingSource: 'FALLBACK',
+      }),
+    });
+
+    expect(result.status).toBe('create');
+    expect(repo.product.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        category: 'GOODS',
+        categoryMappingSource: 'FALLBACK',
+        sourceCategoryCodes: ['CATE999'],
+      }),
+    });
+  });
+
+
+  it('persists structured warning evidence on ImportRow when a write import row is provided', async () => {
+    const repo = buildRepository();
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_warning',
+      rawHash: 'hash-warning-row',
+      importRow: {
+        rowIndex: 12,
+        rawPayload: { '상품번호': '6219', '카테고리ID': 'CATE5', '판매가': '0' },
+        warnings: [
+          {
+            code: 'CATEGORY_FALLBACK_GOODS',
+            severity: 'WARN',
+            domain: 'CATEGORY',
+            scope: 'SOURCE_DEVIATION',
+            field: '카테고리ID',
+            message: 'KODY 상품 카테고리로 명확히 매핑되지 않아 GOODS로 dry-run 처리합니다.',
+            context: { rawCategoryIds: ['CATE5'], assignedCategory: 'GOODS' },
+          },
+          {
+            code: 'ZERO_PRICE',
+            severity: 'REVIEW',
+            domain: 'PRICE',
+            scope: 'KODY_REVIEW_REQUIRED',
+            field: '판매가',
+            message: '판매가가 0원이므로 가격 검수 필요 상태로 등록합니다.',
+            context: { sourcePriceRaw: '0', priceKRW: '0.0000' },
+          },
+        ],
+      },
+      mapped: mappedProduct({
+        externalProductId: '6219',
+        category: 'GOODS',
+        rawCategoryIds: ['CATE5'],
+        categoryMappingSource: 'FALLBACK',
+        priceKRW: '0.0000',
+        priceStatus: 'ZERO_NEEDS_REVIEW',
+        sourcePriceRaw: '0',
+      }),
+    });
+
+    expect(repo.importRow.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        batchId: 'batch_warning',
+        sourceSystem: 'IMWEB_KR',
+        rowIndex: 12,
+        externalProductId: '6219',
+        rawHash: 'hash-warning-row',
+        rawPayload: { '상품번호': '6219', '카테고리ID': 'CATE5', '판매가': '0' },
+        outcome: 'NEEDS_REVIEW',
+        sourcePriceRaw: '0',
+        parsedPriceKRW: '0.0000',
+        assignedPriceStatus: 'ZERO_NEEDS_REVIEW',
+        warningCodes: ['CATEGORY_FALLBACK_GOODS', 'ZERO_PRICE'],
+        reviewRequired: true,
+        productId: 'KODY-PROD-000001',
+        mappingId: 'map_new',
+      }),
+    });
+    expect(repo.importRow.create.mock.calls[0][0].data.warnings).toHaveLength(2);
+  });
+
 
   it('updates the mapped Product and refreshes the existing ProductExternalMapping when the Imweb external ID already exists', async () => {
     const repo = buildRepository({
@@ -144,6 +239,7 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
     priceKRW: '17440.0000',
     priceStatus: 'CONFIRMED',
     sourcePriceRaw: '17440',
+    categoryMappingSource: 'EXACT',
     weightG: 1,
     sku: 'YP0885',
     barcode: '8809704435086',
@@ -216,6 +312,9 @@ function buildRepository(input: {
       findUnique: vi.fn(async () => input.existingMapping ?? null),
       create: vi.fn(async () => ({ id: 'map_new', productId: createdProduct.id })),
       update: vi.fn(async () => input.existingMapping ?? { id: 'map_new', productId: createdProduct.id }),
+    },
+    importRow: {
+      create: vi.fn(async () => ({})),
     },
     productSequence: {
       upsert: vi.fn(async () => ({ key: 'KODY-PROD', lastSeq: 1 })),

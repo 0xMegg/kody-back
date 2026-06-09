@@ -74,6 +74,22 @@ describe('Product schema contract', () => {
     expect(importRow).toContain('priceReviewReason   String?');
   });
 
+
+
+  it('persists external-source warning evidence without making warnings hard product identities', () => {
+    const product = modelBlock('Product');
+    const importRow = modelBlock('ImportRow');
+
+    expect(schema).toContain('enum CategoryMappingSource');
+    expect(product).toContain('categoryMappingSource CategoryMappingSource @default(EXACT)');
+    expect(product).toContain('@@index([categoryMappingSource])');
+
+    expect(importRow).toContain('warnings       Json?');
+    expect(importRow).toContain('warningCodes   String[] @default([])');
+    expect(importRow).toContain('reviewRequired Boolean  @default(false)');
+    expect(importRow).toContain('@@index([warningCodes], type: Gin)');
+  });
+
   it('preserves existing Product relation behavior and stock counter invariants in the migration', () => {
     const product = modelBlock('Product');
 

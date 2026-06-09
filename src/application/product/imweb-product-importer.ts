@@ -3,10 +3,34 @@ import type { ProductCategory } from '@/domain/shared/types.js';
 export type ImwebDryRunStatus = 'create' | 'update' | 'skip' | 'conflict' | 'fail';
 export type ImwebConflictReason = 'existing' | 'duplicate_in_file';
 export type ImwebProductPriceStatus = 'CONFIRMED' | 'MISSING' | 'ZERO_NEEDS_REVIEW' | 'STALE_NEEDS_RECONFIRM';
+export type ImwebCategoryMappingSource = 'EXACT' | 'FALLBACK' | 'MANUAL';
+export type ImwebWarningCode =
+  | 'CATEGORY_FALLBACK_GOODS'
+  | 'DUPLICATE_BARCODE_IN_FILE'
+  | 'DUPLICATE_SKU_IN_FILE'
+  | 'EXISTING_BARCODE'
+  | 'EXISTING_SKU'
+  | 'INVALID_BARCODE_CANDIDATE'
+  | 'INVALID_YN_VALUE'
+  | 'MISSING_OPTION_NAME'
+  | 'MISSING_OPTION_VALUES'
+  | 'MISSING_PRICE'
+  | 'ZERO_PRICE';
+export type ImwebWarningSeverity = 'INFO' | 'WARN' | 'REVIEW' | 'BLOCK';
+export type ImwebWarningDomain = 'BARCODE' | 'CATEGORY' | 'DISPLAY' | 'OPTION' | 'PRICE' | 'SKU';
+export type ImwebWarningScope = 'SOURCE_DEVIATION' | 'KODY_REVIEW_REQUIRED' | 'KODY_INVARIANT_BREACH';
 
 export interface ImwebValidationIssue {
   field: string;
   message: string;
+}
+
+export interface ImwebWarningIssue extends ImwebValidationIssue {
+  code: ImwebWarningCode;
+  severity: ImwebWarningSeverity;
+  domain: ImwebWarningDomain;
+  scope: ImwebWarningScope;
+  context?: Record<string, unknown>;
 }
 
 export interface ImwebConflict {
@@ -31,6 +55,7 @@ export interface ImwebMappedProduct {
   optionName: string | null;
   optionValues: string[];
   rawCategoryIds: string[];
+  categoryMappingSource: ImwebCategoryMappingSource;
   saleStatus: string | null;
   displayStatus: boolean;
   productUrl: string | null;
@@ -42,7 +67,7 @@ export interface ImwebDryRunItem {
   status: ImwebDryRunStatus;
   mapped: ImwebMappedProduct | null;
   errors: ImwebValidationIssue[];
-  warnings: ImwebValidationIssue[];
+  warnings: ImwebWarningIssue[];
   conflicts: ImwebConflict[];
 }
 
@@ -67,12 +92,13 @@ export function parseImwebProductRow(
   rowNumber: number,
 ): ImwebDryRunItem {
   const errors: ImwebValidationIssue[] = [];
-  const warnings: ImwebValidationIssue[] = [];
+  const warnings: ImwebWarningIssue[] = [];
 
   const externalProductId = readRequiredString(row, '상품번호', errors);
   const name = readRequiredString(row, '상품명', errors);
   const rawCategoryIds = parseCategoryIds(readOptionalString(row, '카테고리ID'));
-  const category = mapProductCategory(rawCategoryIds, warnings);
+  const categoryMapping = mapProductCategory(rawCategoryIds, warnings);
+  const category = categoryMapping.category;
   const price = readImwebPrice(row, '판매가', errors, warnings, { scale: 4 });
   const weightG = readKilogramsAsGrams(row, '무게', errors);
   const avgPurchasePriceKRW = readNonNegativeInteger(row, '원가', errors, { defaultValue: 0 });
@@ -91,10 +117,10 @@ export function parseImwebProductRow(
   const optionValues = optionEnabled ? parseOptionValues(readOptionalString(row, '필수옵션값')) : [];
 
   if (optionEnabled && !optionName) {
-    warnings.push({ field: '필수옵션명', message: '옵션사용=Y 이지만 필수옵션명이 비어있습니다.' });
+    warnings.push(makeWarning('MISSING_OPTION_NAME', 'WARN', 'OPTION', 'SOURCE_DEVIATION', '필수옵션명', '옵션사용=Y 이지만 필수옵션명이 비어있습니다.'));
   }
   if (optionEnabled && optionValues.length === 0) {
-    warnings.push({ field: '필수옵션값', message: '옵션사용=Y 이지만 필수옵션값이 비어있습니다.' });
+    warnings.push(makeWarning('MISSING_OPTION_VALUES', 'WARN', 'OPTION', 'SOURCE_DEVIATION', '필수옵션값', '옵션사용=Y 이지만 필수옵션값이 비어있습니다.'));
   }
 
   if (errors.length > 0) {
@@ -120,6 +146,7 @@ export function parseImwebProductRow(
       optionName,
       optionValues,
       rawCategoryIds,
+      categoryMappingSource: categoryMapping.source,
       saleStatus: readOptionalString(row, '판매상태'),
       displayStatus: parseYn(row, '진열상태', false, warnings),
       productUrl: readOptionalString(row, '상품URL'),
@@ -245,14 +272,14 @@ function readImwebPrice(
   row: Record<string, unknown>,
   field: string,
   errors: ImwebValidationIssue[],
-  warnings: ImwebValidationIssue[],
+  warnings: ImwebWarningIssue[],
   options: { scale: number },
 ): { priceKRW: string; priceStatus: ImwebProductPriceStatus; sourcePriceRaw: string | null } | null {
   const sourcePriceRaw = readRawCell(row[field]);
   const normalized = normalizeDecimalCell(row[field]);
   if (!normalized) {
     if (sourcePriceRaw === '가격없음') {
-      warnings.push({ field, message: `${field}가 가격없음이므로 가격 검수 필요 상태로 등록합니다.` });
+      warnings.push(makeWarning('MISSING_PRICE', 'REVIEW', 'PRICE', 'KODY_REVIEW_REQUIRED', field, `${field}가 가격없음이므로 가격 검수 필요 상태로 등록합니다.`, { sourcePriceRaw }));
       return { priceKRW: zeroDecimal(options.scale), priceStatus: 'MISSING', sourcePriceRaw };
     }
     errors.push({ field, message: `${field}가 0 이상의 소수여야 합니다.` });
@@ -267,7 +294,7 @@ function readImwebPrice(
 
   const priceKRW = `${integerPart}.${fractionalPart.padEnd(options.scale, '0')}`;
   if (isZeroDecimal(priceKRW)) {
-    warnings.push({ field, message: `${field}가 0원이므로 가격 검수 필요 상태로 등록합니다.` });
+    warnings.push(makeWarning('ZERO_PRICE', 'REVIEW', 'PRICE', 'KODY_REVIEW_REQUIRED', field, `${field}가 0원이므로 가격 검수 필요 상태로 등록합니다.`, { sourcePriceRaw, priceKRW }));
     return { priceKRW, priceStatus: 'ZERO_NEEDS_REVIEW', sourcePriceRaw };
   }
 
@@ -333,27 +360,32 @@ function parseCategoryIds(value: string | null): string[] {
 
 function mapProductCategory(
   categoryIds: readonly string[],
-  warnings: ImwebValidationIssue[],
-): ProductCategory {
+  warnings: ImwebWarningIssue[],
+): { category: ProductCategory; source: ImwebCategoryMappingSource } {
   const joined = categoryIds.join(',');
   for (const [pattern, category] of CATEGORY_BY_IMWEB_CATEGORY_ID_PREFIX) {
-    if (pattern.test(joined)) return category;
+    if (pattern.test(joined)) return { category, source: 'EXACT' };
   }
-  warnings.push({
-    field: '카테고리ID',
-    message: 'KODY 상품 카테고리로 명확히 매핑되지 않아 GOODS로 dry-run 처리합니다.',
-  });
-  return 'GOODS';
+  warnings.push(makeWarning(
+    'CATEGORY_FALLBACK_GOODS',
+    'WARN',
+    'CATEGORY',
+    'SOURCE_DEVIATION',
+    '카테고리ID',
+    'KODY 상품 카테고리로 명확히 매핑되지 않아 GOODS로 dry-run 처리합니다.',
+    { rawCategoryIds: categoryIds, assignedCategory: 'GOODS' },
+  ));
+  return { category: 'GOODS', source: 'FALLBACK' };
 }
 
 function normalizeBarcode(
   value: string | null,
-  warnings: ImwebValidationIssue[],
+  warnings: ImwebWarningIssue[],
 ): string | null {
   if (!value) return null;
   const normalized = value.replace(/[\s-]/g, '');
   if (!/^\d{8,14}$/.test(normalized)) {
-    warnings.push({ field: '원산지', message: '바코드 후보가 EAN/UPC 숫자 형식이 아닙니다.' });
+    warnings.push(makeWarning('INVALID_BARCODE_CANDIDATE', 'WARN', 'BARCODE', 'SOURCE_DEVIATION', '원산지', '바코드 후보가 EAN/UPC 숫자 형식이 아닙니다.', { value }));
     return value;
   }
   return normalized;
@@ -363,13 +395,13 @@ function parseYn(
   row: Record<string, unknown>,
   field: string,
   defaultValue: boolean,
-  warnings: ImwebValidationIssue[],
+  warnings: ImwebWarningIssue[],
 ): boolean {
   const value = readOptionalString(row, field);
   if (value === 'Y') return true;
   if (value === 'N') return false;
   if (value != null) {
-    warnings.push({ field, message: `${field} 값이 Y/N이 아니어서 기본값으로 처리합니다.` });
+    warnings.push(makeWarning('INVALID_YN_VALUE', 'INFO', 'DISPLAY', 'SOURCE_DEVIATION', field, `${field} 값이 Y/N이 아니어서 기본값으로 처리합니다.`, { value }));
   }
   return defaultValue;
 }
@@ -398,7 +430,7 @@ function appendExternalProductIdConflict(
 }
 
 function appendSearchAidWarning(
-  warnings: ImwebValidationIssue[],
+  warnings: ImwebWarningIssue[],
   field: 'sku' | 'barcode',
   value: string | null,
   seen: ReadonlySet<string>,
@@ -406,17 +438,39 @@ function appendSearchAidWarning(
 ): void {
   if (!value) return;
   if (existing?.has(value)) {
-    warnings.push({
+    warnings.push(makeWarning(
+      field === 'sku' ? 'EXISTING_SKU' : 'EXISTING_BARCODE',
+      'WARN',
+      field === 'sku' ? 'SKU' : 'BARCODE',
+      'SOURCE_DEVIATION',
       field,
-      message: `이미 존재하는 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
-    });
+      `이미 존재하는 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
+      { value },
+    ));
   }
   if (seen.has(value)) {
-    warnings.push({
+    warnings.push(makeWarning(
+      field === 'sku' ? 'DUPLICATE_SKU_IN_FILE' : 'DUPLICATE_BARCODE_IN_FILE',
+      'WARN',
+      field === 'sku' ? 'SKU' : 'BARCODE',
+      'SOURCE_DEVIATION',
       field,
-      message: `파일 안에서 중복된 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
-    });
+      `파일 안에서 중복된 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
+      { value },
+    ));
   }
+}
+
+function makeWarning(
+  code: ImwebWarningCode,
+  severity: ImwebWarningSeverity,
+  domain: ImwebWarningDomain,
+  scope: ImwebWarningScope,
+  field: string,
+  message: string,
+  context?: Record<string, unknown>,
+): ImwebWarningIssue {
+  return context ? { code, severity, domain, scope, field, message, context } : { code, severity, domain, scope, field, message };
 }
 
 function summarize(items: readonly ImwebDryRunItem[]): DryRunImwebProductRowsResult['summary'] {
