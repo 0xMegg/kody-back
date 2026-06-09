@@ -2,6 +2,7 @@ import type { ProductCategory } from '@/domain/shared/types.js';
 
 export type ImwebDryRunStatus = 'create' | 'update' | 'skip' | 'conflict' | 'fail';
 export type ImwebConflictReason = 'existing' | 'duplicate_in_file';
+export type ImwebProductPriceStatus = 'CONFIRMED' | 'MISSING' | 'ZERO_NEEDS_REVIEW' | 'STALE_NEEDS_RECONFIRM';
 
 export interface ImwebValidationIssue {
   field: string;
@@ -19,7 +20,9 @@ export interface ImwebMappedProduct {
   name: string;
   category: ProductCategory;
   artistName: string;
-  priceKRW: number;
+  priceKRW: string;
+  priceStatus: ImwebProductPriceStatus;
+  sourcePriceRaw: string | null;
   weightG: number;
   sku: string | null;
   barcode: string | null;
@@ -70,8 +73,8 @@ export function parseImwebProductRow(
   const name = readRequiredString(row, '상품명', errors);
   const rawCategoryIds = parseCategoryIds(readOptionalString(row, '카테고리ID'));
   const category = mapProductCategory(rawCategoryIds, warnings);
-  const priceKRW = readNonNegativeInteger(row, '판매가', errors);
-  const weightG = readNonNegativeInteger(row, '무게', errors);
+  const price = readImwebPrice(row, '판매가', errors, warnings, { scale: 4 });
+  const weightG = readKilogramsAsGrams(row, '무게', errors);
   const avgPurchasePriceKRW = readNonNegativeInteger(row, '원가', errors, { defaultValue: 0 });
   const sku = readOptionalString(row, '재고번호SKU') ?? readOptionalString(row, '자체 상품코드');
   const barcode = normalizeBarcode(
@@ -106,7 +109,9 @@ export function parseImwebProductRow(
       name: name!,
       category,
       artistName,
-      priceKRW: priceKRW!,
+      priceKRW: price!.priceKRW,
+      priceStatus: price!.priceStatus,
+      sourcePriceRaw: price!.sourcePriceRaw,
       weightG: weightG!,
       sku,
       barcode,
@@ -206,17 +211,116 @@ function readNonNegativeInteger(
   if ((value == null || value === '') && options.defaultValue !== undefined) {
     return options.defaultValue;
   }
-  const numeric =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string'
-        ? Number(value.replace(/,/g, '').trim())
-        : Number.NaN;
+  const numeric = parseNumericCell(value);
   if (!Number.isInteger(numeric) || numeric < 0) {
     errors.push({ field, message: `${field}가 0 이상의 정수여야 합니다.` });
     return null;
   }
   return numeric;
+}
+
+function readNonNegativeDecimal(
+  row: Record<string, unknown>,
+  field: string,
+  errors: ImwebValidationIssue[],
+  options: { scale: number },
+): string | null {
+  const raw = row[field];
+  const normalized = normalizeDecimalCell(raw);
+  if (!normalized) {
+    errors.push({ field, message: `${field}가 0 이상의 소수여야 합니다.` });
+    return null;
+  }
+
+  const [integerPart, fractionalPart = ''] = normalized.split('.');
+  if (fractionalPart.length > options.scale) {
+    errors.push({ field, message: `${field}가 소수점 ${options.scale}자리 이하여야 합니다.` });
+    return null;
+  }
+
+  return `${integerPart}.${fractionalPart.padEnd(options.scale, '0')}`;
+}
+
+function readImwebPrice(
+  row: Record<string, unknown>,
+  field: string,
+  errors: ImwebValidationIssue[],
+  warnings: ImwebValidationIssue[],
+  options: { scale: number },
+): { priceKRW: string; priceStatus: ImwebProductPriceStatus; sourcePriceRaw: string | null } | null {
+  const sourcePriceRaw = readRawCell(row[field]);
+  const normalized = normalizeDecimalCell(row[field]);
+  if (!normalized) {
+    if (sourcePriceRaw === '가격없음') {
+      warnings.push({ field, message: `${field}가 가격없음이므로 가격 검수 필요 상태로 등록합니다.` });
+      return { priceKRW: zeroDecimal(options.scale), priceStatus: 'MISSING', sourcePriceRaw };
+    }
+    errors.push({ field, message: `${field}가 0 이상의 소수여야 합니다.` });
+    return null;
+  }
+
+  const [integerPart, fractionalPart = ''] = normalized.split('.');
+  if (fractionalPart.length > options.scale) {
+    errors.push({ field, message: `${field}가 소수점 ${options.scale}자리 이하여야 합니다.` });
+    return null;
+  }
+
+  const priceKRW = `${integerPart}.${fractionalPart.padEnd(options.scale, '0')}`;
+  if (isZeroDecimal(priceKRW)) {
+    warnings.push({ field, message: `${field}가 0원이므로 가격 검수 필요 상태로 등록합니다.` });
+    return { priceKRW, priceStatus: 'ZERO_NEEDS_REVIEW', sourcePriceRaw };
+  }
+
+  return { priceKRW, priceStatus: 'CONFIRMED', sourcePriceRaw };
+}
+
+function readRawCell(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function zeroDecimal(scale: number): string {
+  return `0.${''.padEnd(scale, '0')}`;
+}
+
+function isZeroDecimal(value: string): boolean {
+  return Number(value) === 0;
+}
+
+function readKilogramsAsGrams(
+  row: Record<string, unknown>,
+  field: string,
+  errors: ImwebValidationIssue[],
+): number | null {
+  const raw = row[field];
+  const normalized = normalizeDecimalCell(raw);
+  if (!normalized) {
+    errors.push({ field, message: `${field}가 0 이상의 kg 숫자여야 합니다.` });
+    return null;
+  }
+
+  const kg = Number(normalized);
+  const grams = Math.round(kg * 1000);
+  if (!Number.isSafeInteger(grams) || grams < 0) {
+    errors.push({ field, message: `${field}를 gram 정수로 변환할 수 없습니다.` });
+    return null;
+  }
+  return grams;
+}
+
+function parseNumericCell(value: unknown): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Number(value.replace(/,/g, '').trim());
+  return Number.NaN;
+}
+
+function normalizeDecimalCell(value: unknown): string | null {
+  const raw = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.replace(/,/g, '').trim() : '';
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) return null;
+  return raw;
 }
 
 function parseCategoryIds(value: string | null): string[] {

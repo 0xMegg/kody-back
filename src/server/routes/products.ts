@@ -135,7 +135,7 @@ function parseCreateBody(body: unknown): CreateBody {
   }
 
   const name = parseRequiredString(body.name, 'name');
-  const priceKRW = parseNonNegativeInteger(body.priceKRW, 'priceKRW');
+  const priceKRW = parseNonNegativeDecimal(body.priceKRW, 'priceKRW', 4);
 
   const result: CreateBody = { name, priceKRW };
 
@@ -185,7 +185,7 @@ function parseUpdateBody(body: unknown): UpdateBody {
   }
 
   if (body.priceKRW !== undefined) {
-    result.priceKRW = parseNonNegativeInteger(body.priceKRW, 'priceKRW');
+    result.priceKRW = parseNonNegativeDecimal(body.priceKRW, 'priceKRW', 4);
   }
 
   if (body.sku !== undefined) {
@@ -304,11 +304,23 @@ function parseCategory(value: unknown): ProductCategory {
 }
 
 function parseNonNegativeInteger(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+  const parsed = parseInteger(value, field);
+  if (parsed < 0) {
     throw new ValidationError(`${field} must be a non-negative integer`);
   }
+  return parsed;
+}
 
-  return value;
+function parseNonNegativeDecimal(value: unknown, field: string, scale: number): string {
+  const raw = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.replace(/,/g, '').trim() : '';
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
+    throw new ValidationError(`${field} must be a non-negative decimal`);
+  }
+  const [integerPart, fractionalPart = ''] = raw.split('.');
+  if (fractionalPart.length > scale) {
+    throw new ValidationError(`${field} must have at most ${scale} decimal places`);
+  }
+  return `${integerPart}.${fractionalPart.padEnd(scale, '0')}`;
 }
 
 function parseInteger(value: unknown, field: string): number {

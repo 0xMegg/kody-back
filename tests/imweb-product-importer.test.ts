@@ -50,8 +50,8 @@ describe('Imweb product dry-run importer', () => {
       name: '(LUCKY DRAW) ILLIT - 4th Mini Album [MAMIHLAPINATAPAI]',
       category: 'ALBUM',
       artistName: 'BELIFT LAB',
-      priceKRW: 17440,
-      weightG: 1,
+      priceKRW: '17440.0000',
+      weightG: 1000,
       sku: 'YP0885',
       barcode: '8809704435086',
       stockOnHand: 14,
@@ -60,6 +60,49 @@ describe('Imweb product dry-run importer', () => {
       optionValues: ['MUSIC PLANET', 'KTOWN4U'],
     });
     expect(result.mapped?.rawCategoryIds).toEqual(['CATE70', 'CATE65']);
+  });
+
+  it('preserves Imweb decimal sales prices and converts kg weight to gram integers', () => {
+    const result = parseImwebProductRow(validRow({ 판매가: '47637.5693', 무게: '0.065' }), 801);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped?.priceKRW).toBe('47637.5693');
+    expect(result.mapped?.weightG).toBe(65);
+    expect(result.mapped?.priceStatus).toBe('CONFIRMED');
+    expect(result.mapped?.sourcePriceRaw).toBe('47637.5693');
+  });
+
+  it('registers non-numeric Imweb prices as missing-price review instead of failing the row', () => {
+    const result = parseImwebProductRow(validRow({ 판매가: '가격없음', 판매상태: '숨김' }), 4925);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped).toMatchObject({
+      priceKRW: '0.0000',
+      priceStatus: 'MISSING',
+      sourcePriceRaw: '가격없음',
+    });
+    expect(result.warnings).toContainEqual({
+      field: '판매가',
+      message: '판매가가 가격없음이므로 가격 검수 필요 상태로 등록합니다.',
+    });
+  });
+
+  it('registers explicit zero Imweb prices as zero-price review instead of confirmed', () => {
+    const result = parseImwebProductRow(validRow({ 판매가: 0, 판매상태: '숨김' }), 21);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped).toMatchObject({
+      priceKRW: '0.0000',
+      priceStatus: 'ZERO_NEEDS_REVIEW',
+      sourcePriceRaw: '0',
+    });
+    expect(result.warnings).toContainEqual({
+      field: '판매가',
+      message: '판매가가 0원이므로 가격 검수 필요 상태로 등록합니다.',
+    });
   });
 
   it('fails rows with missing required values or invalid numeric fields', () => {
@@ -75,8 +118,8 @@ describe('Imweb product dry-run importer', () => {
       expect.arrayContaining([
         { field: '상품번호', message: '상품번호가 비어있습니다.' },
         { field: '상품명', message: '상품명이 비어있습니다.' },
-        { field: '판매가', message: '판매가가 0 이상의 정수여야 합니다.' },
-        { field: '무게', message: '무게가 0 이상의 정수여야 합니다.' },
+        { field: '판매가', message: '판매가가 0 이상의 소수여야 합니다.' },
+        { field: '무게', message: '무게가 0 이상의 kg 숫자여야 합니다.' },
       ]),
     );
   });
