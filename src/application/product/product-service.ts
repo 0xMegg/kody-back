@@ -1,13 +1,15 @@
 import { DomainRuleError } from '@/domain/shared/errors.js';
 import type { ProductCategory, StockMovementType } from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
-import type { ImwebMappedProduct } from '@/application/product/imweb-product-importer.js';
+import type { ImwebMappedProduct, ImwebProductPriceStatus } from '@/application/product/imweb-product-importer.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
 
 const DEFAULT_LIST_LIMIT = 20;
 const MIN_LIST_LIMIT = 1;
 const MAX_LIST_LIMIT = 100;
+
+type ProductPriceStatus = ImwebProductPriceStatus;
 
 export interface ArtistSummary {
   id: string;
@@ -22,7 +24,11 @@ export interface ProductSummary {
   category: ProductCategory | null;
   name: string;
   weightG: number | null;
-  priceKRW: number;
+  priceKRW: string;
+  priceStatus: ProductPriceStatus;
+  lastConfirmedPriceKRW: string | null;
+  lastConfirmedPriceAt: Date | null;
+  sourcePriceRaw: string | null;
   sku: string | null;
   barcode: string | null;
   avgPurchasePriceKRW: number;
@@ -54,7 +60,7 @@ export interface CreateProductInput {
   category?: ProductCategory;
   name: string;
   weightG?: number;
-  priceKRW: number;
+  priceKRW: string | number;
   sku?: string;
   barcode?: string;
   avgPurchasePriceKRW?: number;
@@ -80,7 +86,7 @@ export interface UpdateProductInput {
   productId: string;
   name?: string;
   weightG?: number;
-  priceKRW?: number;
+  priceKRW?: string | number;
   sku?: string | null;
   barcode?: string | null;
   avgPurchasePriceKRW?: number;
@@ -133,7 +139,11 @@ interface StoredProduct {
   category: ProductCategory | null;
   name: string;
   weightG: number | null;
-  priceKRW: number;
+  priceKRW: string;
+  priceStatus: ProductPriceStatus;
+  lastConfirmedPriceKRW: string | null;
+  lastConfirmedPriceAt: Date | null;
+  sourcePriceRaw: string | null;
   sku: string | null;
   barcode: string | null;
   avgPurchasePriceKRW: number;
@@ -253,7 +263,7 @@ export class ProductService {
     const category = input.category === undefined ? undefined : normalizeCategory(input.category);
     const name = normalizeRequiredString(input.name, 'name');
     const weightG = input.weightG === undefined ? undefined : normalizeNonNegativeInteger(input.weightG, 'weightG');
-    const priceKRW = normalizeNonNegativeInteger(input.priceKRW, 'priceKRW');
+    const priceKRW = normalizeNonNegativeDecimal(input.priceKRW, 'priceKRW', 4);
     const sku = input.sku === undefined ? undefined : normalizeOptionalString(input.sku);
     const barcode =
       input.barcode === undefined ? undefined : normalizeOptionalString(input.barcode);
@@ -283,6 +293,10 @@ export class ProductService {
         name,
         ...(weightG !== undefined ? { weightG } : {}),
         priceKRW,
+        priceStatus: 'CONFIRMED',
+        lastConfirmedPriceKRW: priceKRW,
+        lastConfirmedPriceAt: new Date(),
+        sourcePriceRaw: String(input.priceKRW),
         avgPurchasePriceKRW,
         ...(sku !== undefined ? { sku } : {}),
         ...(barcode !== undefined ? { barcode } : {}),
@@ -375,11 +389,17 @@ export class ProductService {
     }
 
     if (input.priceKRW !== undefined) {
-      const priceKRW = normalizeNonNegativeInteger(input.priceKRW, 'priceKRW');
-      if (priceKRW !== current.priceKRW) {
+      const priceKRW = normalizeNonNegativeDecimal(input.priceKRW, 'priceKRW', 4);
+      if (priceKRW !== decimalToString(current.priceKRW, 4)) {
         changes.priceKRW = priceKRW;
-        beforeJson.priceKRW = current.priceKRW;
+        changes.priceStatus = 'CONFIRMED';
+        changes.lastConfirmedPriceKRW = priceKRW;
+        changes.lastConfirmedPriceAt = new Date();
+        changes.sourcePriceRaw = String(input.priceKRW);
+        beforeJson.priceKRW = decimalToString(current.priceKRW, 4);
+        beforeJson.priceStatus = current.priceStatus;
         afterJson.priceKRW = priceKRW;
+        afterJson.priceStatus = 'CONFIRMED';
       }
     }
 
@@ -453,10 +473,9 @@ export class ProductService {
         },
       },
     });
-    const productData = toImwebProductWriteData(input.mapped);
-
     if (mapping) {
       const current = await this.findProduct(mapping.productId);
+      const productData = toImwebProductWriteData(input.mapped, current);
       const updated = await this.repository.product.update({
         where: { id: current.id },
         data: productData,
@@ -483,6 +502,7 @@ export class ProductService {
     }
 
     const productId = await this.generateProductId();
+    const productData = toImwebProductWriteData(input.mapped);
     const created = await this.repository.product.create({
       data: {
         id: productId,
@@ -707,6 +727,26 @@ function normalizeNonNegativeInteger(value: unknown, field: string): number {
   return value;
 }
 
+function normalizeNonNegativeDecimal(value: unknown, field: string, scale: number): string {
+  const raw = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.replace(/,/g, '').trim() : '';
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be a non-negative decimal`, 400);
+  }
+  const [integerPart, fractionalPart = ''] = raw.split('.');
+  if (fractionalPart.length > scale) {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must have at most ${scale} decimal places`, 400);
+  }
+  return `${integerPart}.${fractionalPart.padEnd(scale, '0')}`;
+}
+
+function decimalToString(value: unknown, scale = 4): string {
+  const raw = typeof value === 'object' && value !== null && 'toFixed' in value
+    ? (value as { toFixed: (digits: number) => string }).toFixed(scale)
+    : String(value);
+  const [integerPart, fractionalPart = ''] = raw.split('.');
+  return `${integerPart}.${fractionalPart.padEnd(scale, '0').slice(0, scale)}`;
+}
+
 function normalizeQuantity(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new DomainRuleError('INVALID_QUANTITY', 'quantity must be an integer', 400);
@@ -715,7 +755,8 @@ function normalizeQuantity(value: unknown): number {
   return value;
 }
 
-function toImwebProductWriteData(mapped: ImwebMappedProduct): Record<string, unknown> {
+function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredProduct): Record<string, unknown> {
+  const priceFields = toImwebPriceWriteData(mapped, current);
   return {
     category: mapped.category,
     sourceCategoryCodes: mapped.rawCategoryIds,
@@ -723,13 +764,44 @@ function toImwebProductWriteData(mapped: ImwebMappedProduct): Record<string, unk
     labelName: normalizeOptionalString(mapped.artistName) ?? null,
     thumbnailUrl: normalizeOptionalString(mapped.thumbnailUrl) ?? null,
     weightG: mapped.weightG,
-    priceKRW: mapped.priceKRW,
+    ...priceFields,
     sku: normalizeOptionalString(mapped.sku) ?? null,
     barcode: normalizeOptionalString(mapped.barcode) ?? null,
     stockOnHand: mapped.stockOnHand,
     avgPurchasePriceKRW: mapped.avgPurchasePriceKRW,
-    saleStatus: toProductSaleStatus(mapped.saleStatus),
+    saleStatus: mapped.priceStatus === 'CONFIRMED' ? toProductSaleStatus(mapped.saleStatus) : 'OFF_SALE',
     isDisplayed: mapped.displayStatus,
+  };
+}
+
+function toImwebPriceWriteData(mapped: ImwebMappedProduct, current?: StoredProduct): Record<string, unknown> {
+  if (mapped.priceStatus === 'CONFIRMED') {
+    return {
+      priceKRW: mapped.priceKRW,
+      priceStatus: 'CONFIRMED',
+      lastConfirmedPriceKRW: mapped.priceKRW,
+      lastConfirmedPriceAt: new Date(),
+      sourcePriceRaw: mapped.sourcePriceRaw,
+    };
+  }
+
+  if (current?.priceStatus === 'CONFIRMED') {
+    const lastConfirmedPriceKRW = current.lastConfirmedPriceKRW ?? decimalToString(current.priceKRW, 4);
+    return {
+      priceKRW: decimalToString(current.priceKRW, 4),
+      priceStatus: 'STALE_NEEDS_RECONFIRM',
+      lastConfirmedPriceKRW,
+      lastConfirmedPriceAt: current.lastConfirmedPriceAt ?? null,
+      sourcePriceRaw: mapped.sourcePriceRaw,
+    };
+  }
+
+  return {
+    priceKRW: mapped.priceKRW,
+    priceStatus: mapped.priceStatus,
+    lastConfirmedPriceKRW: current?.lastConfirmedPriceKRW ?? null,
+    lastConfirmedPriceAt: current?.lastConfirmedPriceAt ?? null,
+    sourcePriceRaw: mapped.sourcePriceRaw,
   };
 }
 
@@ -745,7 +817,7 @@ function toImwebMappingRefreshData(input: UpsertImwebProductInput): Record<strin
 function toProductSaleStatus(value: string | null): 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT' {
   if (value === '판매중') return 'ON_SALE';
   if (value === '품절') return 'SOLD_OUT';
-  if (value === '판매안함' || value === '판매중지') return 'OFF_SALE';
+  if (value === '판매안함' || value === '판매중지' || value === '숨김') return 'OFF_SALE';
   return 'DRAFT';
 }
 
@@ -789,7 +861,11 @@ function toProductSummary(product: StoredProduct): ProductSummary {
     category: product.category,
     name: product.name,
     weightG: product.weightG,
-    priceKRW: product.priceKRW,
+    priceKRW: decimalToString(product.priceKRW, 4),
+    priceStatus: product.priceStatus,
+    lastConfirmedPriceKRW: product.lastConfirmedPriceKRW == null ? null : decimalToString(product.lastConfirmedPriceKRW, 4),
+    lastConfirmedPriceAt: product.lastConfirmedPriceAt,
+    sourcePriceRaw: product.sourcePriceRaw,
     sku: product.sku,
     barcode: product.barcode,
     avgPurchasePriceKRW: product.avgPurchasePriceKRW,
@@ -819,7 +895,10 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
     category: product.category,
     name: product.name,
     weightG: product.weightG,
-    priceKRW: product.priceKRW,
+    priceKRW: decimalToString(product.priceKRW, 4),
+    priceStatus: product.priceStatus,
+    lastConfirmedPriceKRW: product.lastConfirmedPriceKRW == null ? null : decimalToString(product.lastConfirmedPriceKRW, 4),
+    sourcePriceRaw: product.sourcePriceRaw,
     sku: product.sku,
     barcode: product.barcode,
     avgPurchasePriceKRW: product.avgPurchasePriceKRW,

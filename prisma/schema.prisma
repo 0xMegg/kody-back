@@ -75,6 +75,13 @@ enum ProductSaleStatus {
   DRAFT
 }
 
+enum ProductPriceStatus {
+  CONFIRMED
+  MISSING
+  ZERO_NEEDS_REVIEW
+  STALE_NEEDS_RECONFIRM
+}
+
 enum CategoryReviewStatus {
   PENDING
   MAPPED
@@ -306,13 +313,13 @@ model Account {
   updatedAt           DateTime      @updatedAt
 
   // Relations
-  salesRep            User              @relation("SalesRep", fields: [salesRepId], references: [id])
-  shippingAddresses   ShippingAddress[]
-  relationsAsSource   AccountRelation[] @relation("AccountSource")
-  relationsAsTarget   AccountRelation[] @relation("AccountTarget")
-  orders              Order[]
-  payments            Payment[]
-  shipments           Shipment[]
+  salesRep          User              @relation("SalesRep", fields: [salesRepId], references: [id])
+  shippingAddresses ShippingAddress[]
+  relationsAsSource AccountRelation[] @relation("AccountSource")
+  relationsAsTarget AccountRelation[] @relation("AccountTarget")
+  orders            Order[]
+  payments          Payment[]
+  shipments         Shipment[]
 
   @@index([salesRepId])
 }
@@ -378,7 +385,13 @@ model Product {
   thumbnailUrl String?
 
   weightG  Int?
-  priceKRW Int
+  priceKRW Decimal @db.Decimal(15, 4)
+
+  priceStatus           ProductPriceStatus @default(CONFIRMED)
+  lastConfirmedPriceKRW Decimal?           @db.Decimal(15, 4)
+  lastConfirmedPriceAt  DateTime?
+  sourcePriceRaw        String?
+  priceReviewNote       String?
 
   sku     String?
   barcode String?
@@ -391,11 +404,11 @@ model Product {
 
   releaseDateText String?
   releaseDate     DateTime?
-  detailHtml      String? @db.Text
+  detailHtml      String?   @db.Text
 
-  avgPurchasePriceKRW Int @default(0)
-  orderBasedStock     Int @default(0)
-  shipmentBasedStock  Int @default(0)
+  avgPurchasePriceKRW Int      @default(0)
+  orderBasedStock     Int      @default(0)
+  shipmentBasedStock  Int      @default(0)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -411,6 +424,7 @@ model Product {
   @@index([sku])
   @@index([barcode])
   @@index([saleStatus])
+  @@index([priceStatus])
 }
 
 model ProductExternalMapping {
@@ -423,8 +437,8 @@ model ProductExternalMapping {
   externalProductId String
   externalUrl       String?
 
-  firstSeenAt     DateTime @default(now())
-  lastSyncedAt    DateTime @default(now())
+  firstSeenAt     DateTime  @default(now())
+  lastSyncedAt    DateTime  @default(now())
   sourceUpdatedAt DateTime?
 
   firstImportBatchId String?
@@ -464,8 +478,8 @@ model ProductOptionValue {
   option   ProductOption @relation(fields: [optionId], references: [id])
 
   value         String
-  position      Int @default(0)
-  priceDeltaKRW Int @default(0)
+  position      Int    @default(0)
+  priceDeltaKRW Int    @default(0)
   stockSnapshot Int?
 
   @@index([optionId])
@@ -513,6 +527,11 @@ model ImportRow {
 
   outcome ImportRowOutcome @default(PENDING)
 
+  sourcePriceRaw      String?
+  parsedPriceKRW      Decimal?            @db.Decimal(15, 4)
+  assignedPriceStatus ProductPriceStatus?
+  priceReviewReason   String?
+
   productId String?
   mappingId String?
 
@@ -547,17 +566,17 @@ model StockMovement {
 
 /// Order ID follows business format: YYMMDDNNN0000
 model Order {
-  id             String      @id // Business order number: YYMMDDNNN0000
-  orderDate      DateTime
-  accountId      String
-  salesRepId     String
-  currency       Currency
-  status         OrderStatus @default(PENDING)
-  shippingFee    Decimal     @default(0) @db.Decimal(15, 2)
-  remittanceFee  Decimal     @default(0) @db.Decimal(15, 2)
-  memo           String?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id            String      @id // Business order number: YYMMDDNNN0000
+  orderDate     DateTime
+  accountId     String
+  salesRepId    String
+  currency      Currency
+  status        OrderStatus @default(PENDING)
+  shippingFee   Decimal     @default(0) @db.Decimal(15, 2)
+  remittanceFee Decimal     @default(0) @db.Decimal(15, 2)
+  memo          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   // Relations
   account  Account     @relation(fields: [accountId], references: [id])
@@ -623,10 +642,10 @@ model Payment {
 }
 
 model FxRate {
-  id       String   @id @default(cuid())
-  date     DateTime
-  currency Currency
-  rateToKRW Decimal @db.Decimal(15, 4)
+  id        String   @id @default(cuid())
+  date      DateTime
+  currency  Currency
+  rateToKRW Decimal  @db.Decimal(15, 4)
   createdAt DateTime @default(now())
 
   @@unique([date, currency])
@@ -651,7 +670,7 @@ model Shipment {
 
   // Relations
   account         Account         @relation(fields: [accountId], references: [id])
-  shippingAddress ShippingAddress  @relation(fields: [shippingAddressId], references: [id])
+  shippingAddress ShippingAddress @relation(fields: [shippingAddressId], references: [id])
   items           ShipmentItem[]
 
   @@index([accountId])
@@ -659,14 +678,14 @@ model Shipment {
 }
 
 model ShipmentItem {
-  id          String  @id @default(cuid())
+  id          String   @id @default(cuid())
   shipmentId  String
   orderItemId String
   productId   String
   quantity    Int
   hsCode      String?
   htsCode     String?
-  subtotal    Decimal @db.Decimal(15, 2)
+  subtotal    Decimal  @db.Decimal(15, 2)
   createdAt   DateTime @default(now())
 
   // Relations
@@ -683,17 +702,17 @@ model ShipmentItem {
 // =============================================================================
 
 model ActionLog {
-  id            String     @id @default(cuid())
-  actorUserId   String?
-  actionType    ActionType
-  targetType    String
-  targetId      String?
-  beforeJson    Json?
-  afterJson     Json?
-  metadataJson  Json?
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime   @default(now())
+  id           String     @id @default(cuid())
+  actorUserId  String?
+  actionType   ActionType
+  targetType   String
+  targetId     String?
+  beforeJson   Json?
+  afterJson    Json?
+  metadataJson Json?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime   @default(now())
 
   // Relations
   actor User? @relation("ActionLogActor", fields: [actorUserId], references: [id])

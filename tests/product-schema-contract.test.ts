@@ -58,6 +58,22 @@ describe('Product schema contract', () => {
     expect(modelBlock('StockMovement')).toContain('product   Product @relation(fields: [productId], references: [id])');
   });
 
+  it('keeps Imweb price-review state explicit and queryable without making price nullable', () => {
+    const product = modelBlock('Product');
+    const importRow = modelBlock('ImportRow');
+
+    expect(schema).toContain('enum ProductPriceStatus');
+    expect(product).toContain('priceKRW Decimal @db.Decimal(15, 4)');
+    expect(product).toContain('priceStatus           ProductPriceStatus @default(CONFIRMED)');
+    expect(product).toContain('lastConfirmedPriceKRW Decimal?           @db.Decimal(15, 4)');
+    expect(product).toContain('sourcePriceRaw        String?');
+    expect(product).toContain('@@index([priceStatus])');
+    expect(importRow).toContain('sourcePriceRaw      String?');
+    expect(importRow).toContain('parsedPriceKRW      Decimal?');
+    expect(importRow).toContain('assignedPriceStatus ProductPriceStatus?');
+    expect(importRow).toContain('priceReviewReason   String?');
+  });
+
   it('preserves existing Product relation behavior and stock counter invariants in the migration', () => {
     const product = modelBlock('Product');
 

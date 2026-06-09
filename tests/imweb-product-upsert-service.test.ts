@@ -28,7 +28,7 @@ describe('ProductService Imweb import upsert contract', () => {
         sourceCategoryCodes: ['CATE70', 'CATE65'],
         name: 'ILLIT Album',
         labelName: 'BELIFT LAB',
-        priceKRW: 17440,
+        priceKRW: '17440.0000',
         weightG: 1,
         sku: 'YP0885',
         barcode: '8809704435086',
@@ -91,6 +91,48 @@ describe('ProductService Imweb import upsert contract', () => {
       }),
     });
   });
+
+  it('does not overwrite a confirmed product price when Imweb re-import sends a missing price', async () => {
+    const repo = buildRepository({
+      existingMapping: {
+        id: 'map_6571',
+        productId: 'KODY-PROD-000123',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+      existingProduct: storedProduct({
+        id: 'KODY-PROD-000123',
+        priceKRW: '12000.0000',
+        priceStatus: 'CONFIRMED',
+        lastConfirmedPriceKRW: '12000.0000',
+        lastConfirmedPriceAt: NOW,
+      }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_3',
+      rawHash: 'hash-6571-missing-price',
+      mapped: mappedProduct({
+        externalProductId: '6571',
+        priceKRW: '0.0000',
+        priceStatus: 'MISSING',
+        sourcePriceRaw: '가격없음',
+      }),
+    });
+
+    expect(repo.product.update).toHaveBeenCalledWith({
+      where: { id: 'KODY-PROD-000123' },
+      data: expect.objectContaining({
+        priceKRW: '12000.0000',
+        priceStatus: 'STALE_NEEDS_RECONFIRM',
+        lastConfirmedPriceKRW: '12000.0000',
+        sourcePriceRaw: '가격없음',
+      }),
+    });
+  });
+
 });
 
 function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMappedProduct {
@@ -99,7 +141,9 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
     name: 'ILLIT Album',
     category: 'ALBUM',
     artistName: 'BELIFT LAB',
-    priceKRW: 17440,
+    priceKRW: '17440.0000',
+    priceStatus: 'CONFIRMED',
+    sourcePriceRaw: '17440',
     weightG: 1,
     sku: 'YP0885',
     barcode: '8809704435086',
@@ -127,7 +171,11 @@ function baseStoredProduct() {
     category: 'ALBUM' as const,
     name: 'ILLIT Album',
     weightG: 1,
-    priceKRW: 17440,
+    priceKRW: '17440.0000',
+    priceStatus: 'CONFIRMED' as const,
+    lastConfirmedPriceKRW: '17440.0000',
+    lastConfirmedPriceAt: NOW,
+    sourcePriceRaw: '17440',
     sku: 'YP0885',
     barcode: '8809704435086',
     avgPurchasePriceKRW: 0,
