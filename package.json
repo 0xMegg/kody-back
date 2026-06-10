@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@e965/xlsx": "^0.20.3",
     "@fastify/cors": "^11.0.1",
     "@prisma/client": "^6.4.1",
     "dotenv": "^16.4.7",

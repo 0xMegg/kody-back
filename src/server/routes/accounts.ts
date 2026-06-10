@@ -46,6 +46,18 @@ export function registerAccountRoutes(server: FastifyInstance): void {
   );
 
   server.get(
+    '/accounts/:id/customer-detail',
+    { preHandler: requirePermission({ resource: 'account', action: 'read' }) },
+    async (request, reply) => {
+      const accountId = parseAccountId(request.params);
+      const result = await server.services.accounts.getCustomerDetail(accountId);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.get(
     '/accounts/:id',
     { preHandler: requirePermission({ resource: 'account', action: 'read' }) },
     async (request, reply) => {

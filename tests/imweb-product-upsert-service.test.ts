@@ -187,6 +187,59 @@ describe('ProductService Imweb import upsert contract', () => {
     });
   });
 
+  it('drops unsafe Imweb external URLs instead of persisting executable link schemes', async () => {
+    const repo = buildRepository({
+      existingMapping: {
+        id: 'map_6571',
+        productId: 'KODY-PROD-000123',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+      existingProduct: storedProduct({ id: 'KODY-PROD-000123' }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_unsafe_url',
+      rawHash: 'hash-unsafe-url',
+      mapped: mappedProduct({ externalProductId: '6571', productUrl: 'javascript:alert(1)' }),
+    });
+
+    expect(repo.productExternalMapping.update).toHaveBeenCalledWith({
+      where: { id: 'map_6571' },
+      data: expect.objectContaining({ externalUrl: null }),
+    });
+  });
+
+  it('preserves existing thumbnail and detail HTML when Imweb re-import sends blank values', async () => {
+    const repo = buildRepository({
+      existingMapping: {
+        id: 'map_6571',
+        productId: 'KODY-PROD-000123',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+      existingProduct: storedProduct({
+        id: 'KODY-PROD-000123',
+        thumbnailUrl: 'https://cdn.imweb.me/original.png',
+        detailHtml: '<p>original detail</p>',
+      }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_blank_media',
+      rawHash: 'hash-blank-media',
+      mapped: mappedProduct({ externalProductId: '6571', thumbnailUrl: '', detailHtml: '' }),
+    });
+
+    const updateData = repo.product.update.mock.calls[0][0].data;
+    expect(updateData).not.toHaveProperty('thumbnailUrl');
+    expect(updateData).not.toHaveProperty('detailHtml');
+  });
+
   it('does not overwrite a confirmed product price when Imweb re-import sends a missing price', async () => {
     const repo = buildRepository({
       existingMapping: {
@@ -252,6 +305,7 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
     displayStatus: true,
     productUrl: 'https://kodyglobalkr.imweb.me/63/?idx=6571',
     thumbnailUrl: 'https://cdn.imweb.me/thumbnail/20260519/524b0c5e22bb422e.png',
+    detailHtml: '<p>ILLIT Album detail</p>',
     ...overrides,
   };
 }
@@ -266,6 +320,10 @@ function baseStoredProduct() {
     artistId: null,
     category: 'ALBUM' as const,
     name: 'ILLIT Album',
+    labelName: 'BELIFT LAB',
+    thumbnailUrl: null,
+    detailHtml: null,
+    releaseDateText: null,
     weightG: 1,
     priceKRW: '17440.0000',
     priceStatus: 'CONFIRMED' as const,
@@ -275,9 +333,15 @@ function baseStoredProduct() {
     sku: 'YP0885',
     barcode: '8809704435086',
     avgPurchasePriceKRW: 0,
+    stockManaged: true,
     stockOnHand: 14,
     orderBasedStock: 0,
     shipmentBasedStock: 0,
+    saleStatus: 'ON_SALE' as const,
+    isDisplayed: true,
+    categoryMappingSource: 'EXACT' as const,
+    sourceCategoryCodes: ['CATE70', 'CATE65'],
+    categoryReviewStatus: 'PENDING' as const,
     createdAt: NOW,
     updatedAt: NOW,
   };

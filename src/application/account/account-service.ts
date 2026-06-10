@@ -1,5 +1,12 @@
 import { DomainRuleError } from '@/domain/shared/errors.js';
-import type { DepositSource, UserStatus } from '@/domain/shared/types.js';
+import type {
+  CategoryMappingSource,
+  Currency,
+  DepositSource,
+  OrderStatus,
+  ProductCategory,
+  UserStatus,
+} from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 
 const DEPOSIT_SOURCES: readonly DepositSource[] = ['NONGHYUP', 'HANA', 'PAYPAL', 'PAYONEER'];
@@ -19,6 +26,32 @@ export interface AccountSummary {
   memo: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AccountCustomerProductChip {
+  kodyProductId: string;
+  name: string;
+  category: ProductCategory | null;
+  categoryMappingSource: CategoryMappingSource;
+  sourceCategoryCodes: string[];
+  thumbnailUrl: string | null;
+}
+
+export interface AccountCustomerRecentOrder {
+  id: string;
+  orderDate: Date;
+  status: OrderStatus;
+  currency: Currency;
+  itemsSubtotal: string;
+  shippingFee: string;
+  remittanceFee: string;
+  total: string;
+  items: AccountCustomerProductChip[];
+}
+
+export interface AccountCustomerDetail {
+  account: AccountSummary;
+  recentOrders: AccountCustomerRecentOrder[];
 }
 
 export interface CreateAccountInput {
@@ -77,6 +110,30 @@ interface StoredUserLite {
   status: UserStatus;
 }
 
+interface StoredOrderProductLite {
+  id: string;
+  name: string;
+  category: ProductCategory | null;
+  categoryMappingSource: CategoryMappingSource;
+  sourceCategoryCodes: string[];
+  thumbnailUrl: string | null;
+}
+
+interface StoredOrderItemLite {
+  subtotal: unknown;
+  product: StoredOrderProductLite | null;
+}
+
+interface StoredOrderWithItems {
+  id: string;
+  orderDate: Date;
+  status: OrderStatus;
+  currency: Currency;
+  shippingFee: unknown;
+  remittanceFee: unknown;
+  items: StoredOrderItemLite[];
+}
+
 interface AccountRepository {
   account: {
     create(args: { data: Record<string, unknown> }): Promise<StoredAccount>;
@@ -95,6 +152,14 @@ interface AccountRepository {
   };
   user: {
     findUnique(args: { where: { id: string } }): Promise<StoredUserLite | null>;
+  };
+  order: {
+    findMany(args: {
+      where: { accountId: string };
+      orderBy: Array<Record<string, 'asc' | 'desc'>>;
+      take: number;
+      select: Record<string, unknown>;
+    }): Promise<StoredOrderWithItems[]>;
   };
 }
 
@@ -149,6 +214,43 @@ export class AccountService {
   async getAccount(accountId: string): Promise<AccountSummary> {
     const account = await this.findAccount(accountId);
     return toAccountSummary(account);
+  }
+
+  async getCustomerDetail(accountId: string): Promise<AccountCustomerDetail> {
+    const account = await this.findAccount(accountId);
+    const recentOrders = await this.repository.order.findMany({
+      where: { accountId: account.id },
+      orderBy: [{ orderDate: 'desc' }, { id: 'desc' }],
+      take: 10,
+      select: {
+        id: true,
+        orderDate: true,
+        status: true,
+        currency: true,
+        shippingFee: true,
+        remittanceFee: true,
+        items: {
+          select: {
+            subtotal: true,
+            product: {
+              select: {
+                id: true,
+                name: true,
+                category: true,
+                categoryMappingSource: true,
+                sourceCategoryCodes: true,
+                thumbnailUrl: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return {
+      account: toAccountSummary(account),
+      recentOrders: recentOrders.map(toCustomerRecentOrder),
+    };
   }
 
   async listAccounts(input: ListAccountsInput): Promise<ListAccountsResult> {
@@ -312,6 +414,57 @@ export class AccountService {
       );
     }
   }
+}
+
+function toCustomerRecentOrder(order: StoredOrderWithItems): AccountCustomerRecentOrder {
+  const itemsSubtotal = order.items.reduce((sum, item) => sum + decimalToNumber(item.subtotal), 0);
+  const shippingFee = decimalToNumber(order.shippingFee);
+  const remittanceFee = decimalToNumber(order.remittanceFee);
+  const total = itemsSubtotal + shippingFee + remittanceFee;
+
+  return {
+    id: order.id,
+    orderDate: order.orderDate,
+    status: order.status,
+    currency: order.currency,
+    itemsSubtotal: decimalToString(itemsSubtotal),
+    shippingFee: decimalToString(shippingFee),
+    remittanceFee: decimalToString(remittanceFee),
+    total: decimalToString(total),
+    items: order.items
+      .map((item) => item.product)
+      .filter((product): product is StoredOrderProductLite => product !== null)
+      .map((product) => ({
+        kodyProductId: product.id,
+        name: product.name,
+        category: product.category,
+        categoryMappingSource: product.categoryMappingSource,
+        sourceCategoryCodes: product.sourceCategoryCodes,
+        thumbnailUrl: product.thumbnailUrl,
+      })),
+  };
+}
+
+function decimalToNumber(value: unknown): number {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  if (value && typeof value === 'object' && 'toString' in value) {
+    const parsed = Number(String(value));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
+}
+
+function decimalToString(value: number): string {
+  return value.toFixed(2);
 }
 
 function normalizeRequiredString(value: unknown, field: string): string {

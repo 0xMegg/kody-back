@@ -1,4 +1,12 @@
 import type { FastifyInstance } from 'fastify';
+import { ApiError, AuthorizationError, successResponse, ValidationError } from '../api/index.js';
+import type { Role } from '@/domain/shared/types.js';
+import {
+  dryRunImwebProductWorkbookUpload,
+  EXCEL_UPLOAD_MAX_BYTES,
+  IMWEB_EXPORT_MAX_SELECTION,
+  type ProductWorkbookUploadInput,
+} from '@/application/product/product-excel-workflow.js';
 import type {
   AdjustInput,
   CreateProductInput,
@@ -6,11 +14,18 @@ import type {
   ListProductsInput,
   UpdateProductInput,
 } from '@/application/product/product-service.js';
-import type { ProductCategory } from '@/domain/shared/types.js';
-import { successResponse, ValidationError } from '../api/index.js';
+import type {
+  CategoryMappingSource,
+  CategoryReviewStatus,
+  ProductCategory,
+  ProductSaleStatus,
+} from '@/domain/shared/types.js';
 import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
+const PRODUCT_SALE_STATUSES: readonly ProductSaleStatus[] = ['ON_SALE', 'OFF_SALE', 'SOLD_OUT', 'DRAFT'];
+const CATEGORY_MAPPING_SOURCES: readonly CategoryMappingSource[] = ['EXACT', 'FALLBACK', 'MANUAL'];
+const CATEGORY_REVIEW_STATUSES: readonly CategoryReviewStatus[] = ['PENDING', 'MAPPED', 'NEEDS_REVIEW'];
 
 export function registerProductRoutes(server: FastifyInstance): void {
   server.post(
@@ -36,6 +51,45 @@ export function registerProductRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const query = parseListQuery(request.query);
       const result = await server.services.products.listProducts(query);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.post(
+    '/products/import/dry-run',
+    { preHandler: requirePermission({ resource: 'product', action: 'read' }), bodyLimit: EXCEL_UPLOAD_MAX_BYTES * 2 },
+    async (request, reply) => {
+      assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN', 'OPERATIONS', 'FINANCE']);
+      const body = parseWorkbookUploadBody(request.body);
+      const result = dryRunImwebProductWorkbookUpload(body);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.post(
+    '/products/import/commit',
+    { preHandler: requirePermission({ resource: 'product', action: 'write' }) },
+    async (request, reply) => {
+      assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN', 'FINANCE']);
+      reply.status(403);
+      throw new ApiError(403, 'COMMIT_DISABLED', 'Excel import commit is disabled for this goal; dry-run evidence is required and dev/prod writes need explicit approval.');
+    },
+  );
+
+  server.post(
+    '/products/export/imweb',
+    { preHandler: requirePermission({ resource: 'product', action: 'read' }) },
+    async (request, reply) => {
+      assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN', 'OPERATIONS', 'FINANCE']);
+      const productIds = parseProductIdsBody(request.body);
+      if (productIds.length > IMWEB_EXPORT_MAX_SELECTION) {
+        throw new ApiError(413, 'SELECTION_LIMIT_EXCEEDED', `Cannot export more than ${IMWEB_EXPORT_MAX_SELECTION} products at once.`);
+      }
+      const result = await server.services.products.exportImwebProducts(productIds);
 
       reply.status(200);
       return successResponse(result);
@@ -129,6 +183,29 @@ type UpdateBody = Omit<UpdateProductInput, 'actorUserId' | 'productId' | 'ipAddr
 type InboundBody = Omit<InboundInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 type AdjustBody = Omit<AdjustInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 
+function assertAnyRole(actualRoles: readonly Role[], allowedRoles: readonly Role[]): void {
+  if (!actualRoles.some((role) => allowedRoles.includes(role))) {
+    throw new AuthorizationError();
+  }
+}
+
+function parseWorkbookUploadBody(body: unknown): ProductWorkbookUploadInput {
+  if (!isRecord(body)) {
+    throw new ValidationError('Request body must be an object');
+  }
+  const fileName = parseRequiredString(body.fileName, 'fileName');
+  const contentBase64 = parseRequiredString(body.contentBase64, 'contentBase64');
+  const sizeBytes = parseNonNegativeInteger(body.sizeBytes, 'sizeBytes');
+  return { fileName, contentBase64, sizeBytes };
+}
+
+function parseProductIdsBody(body: unknown): string[] {
+  if (!isRecord(body)) {
+    throw new ValidationError('Request body must be an object');
+  }
+  return parseStringArray(body.productIds, 'productIds');
+}
+
 function parseCreateBody(body: unknown): CreateBody {
   if (!isRecord(body)) {
     throw new ValidationError('Request body must be an object');
@@ -166,6 +243,39 @@ function parseCreateBody(body: unknown): CreateBody {
     );
   }
 
+  if (body.labelName !== undefined) {
+    result.labelName = body.labelName === null ? null : parseRequiredString(body.labelName, 'labelName');
+  }
+
+  if (body.releaseDateText !== undefined) {
+    result.releaseDateText =
+      body.releaseDateText === null ? null : parseRequiredString(body.releaseDateText, 'releaseDateText');
+  }
+
+  if (body.stockManaged !== undefined) {
+    result.stockManaged = parseBoolean(body.stockManaged, 'stockManaged');
+  }
+
+  if (body.saleStatus !== undefined) {
+    result.saleStatus = parseSaleStatus(body.saleStatus);
+  }
+
+  if (body.isDisplayed !== undefined) {
+    result.isDisplayed = parseBoolean(body.isDisplayed, 'isDisplayed');
+  }
+
+  if (body.categoryMappingSource !== undefined) {
+    result.categoryMappingSource = parseCategoryMappingSource(body.categoryMappingSource);
+  }
+
+  if (body.sourceCategoryCodes !== undefined) {
+    result.sourceCategoryCodes = parseStringArray(body.sourceCategoryCodes, 'sourceCategoryCodes');
+  }
+
+  if (body.categoryReviewStatus !== undefined) {
+    result.categoryReviewStatus = parseCategoryReviewStatus(body.categoryReviewStatus);
+  }
+
   return result;
 }
 
@@ -176,12 +286,20 @@ function parseUpdateBody(body: unknown): UpdateBody {
 
   const result: UpdateBody = {};
 
+  if (body.artistId !== undefined) {
+    result.artistId = body.artistId === null ? null : parseRequiredString(body.artistId, 'artistId');
+  }
+
+  if (body.category !== undefined) {
+    result.category = body.category === null ? null : parseCategory(body.category);
+  }
+
   if (body.name !== undefined) {
     result.name = parseRequiredString(body.name, 'name');
   }
 
   if (body.weightG !== undefined) {
-    result.weightG = parseNonNegativeInteger(body.weightG, 'weightG');
+    result.weightG = body.weightG === null ? null : parseNonNegativeInteger(body.weightG, 'weightG');
   }
 
   if (body.priceKRW !== undefined) {
@@ -201,6 +319,39 @@ function parseUpdateBody(body: unknown): UpdateBody {
       body.avgPurchasePriceKRW,
       'avgPurchasePriceKRW',
     );
+  }
+
+  if (body.labelName !== undefined) {
+    result.labelName = body.labelName === null ? null : parseRequiredString(body.labelName, 'labelName');
+  }
+
+  if (body.releaseDateText !== undefined) {
+    result.releaseDateText =
+      body.releaseDateText === null ? null : parseRequiredString(body.releaseDateText, 'releaseDateText');
+  }
+
+  if (body.stockManaged !== undefined) {
+    result.stockManaged = parseBoolean(body.stockManaged, 'stockManaged');
+  }
+
+  if (body.saleStatus !== undefined) {
+    result.saleStatus = parseSaleStatus(body.saleStatus);
+  }
+
+  if (body.isDisplayed !== undefined) {
+    result.isDisplayed = parseBoolean(body.isDisplayed, 'isDisplayed');
+  }
+
+  if (body.categoryMappingSource !== undefined) {
+    result.categoryMappingSource = parseCategoryMappingSource(body.categoryMappingSource);
+  }
+
+  if (body.sourceCategoryCodes !== undefined) {
+    result.sourceCategoryCodes = parseStringArray(body.sourceCategoryCodes, 'sourceCategoryCodes');
+  }
+
+  if (body.categoryReviewStatus !== undefined) {
+    result.categoryReviewStatus = parseCategoryReviewStatus(body.categoryReviewStatus);
   }
 
   return result;
@@ -301,6 +452,64 @@ function parseCategory(value: unknown): ProductCategory {
   }
 
   return value as ProductCategory;
+}
+
+function parseSaleStatus(value: unknown): ProductSaleStatus {
+  if (typeof value !== 'string' || !PRODUCT_SALE_STATUSES.includes(value as ProductSaleStatus)) {
+    throw new ValidationError(`saleStatus must be one of: ${PRODUCT_SALE_STATUSES.join(', ')}`);
+  }
+
+  return value as ProductSaleStatus;
+}
+
+function parseCategoryMappingSource(value: unknown): CategoryMappingSource {
+  if (
+    typeof value !== 'string' ||
+    !CATEGORY_MAPPING_SOURCES.includes(value as CategoryMappingSource)
+  ) {
+    throw new ValidationError(
+      `categoryMappingSource must be one of: ${CATEGORY_MAPPING_SOURCES.join(', ')}`,
+    );
+  }
+
+  return value as CategoryMappingSource;
+}
+
+function parseCategoryReviewStatus(value: unknown): CategoryReviewStatus {
+  if (
+    typeof value !== 'string' ||
+    !CATEGORY_REVIEW_STATUSES.includes(value as CategoryReviewStatus)
+  ) {
+    throw new ValidationError(
+      `categoryReviewStatus must be one of: ${CATEGORY_REVIEW_STATUSES.join(', ')}`,
+    );
+  }
+
+  return value as CategoryReviewStatus;
+}
+
+function parseBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new ValidationError(`${field} must be a boolean`);
+  }
+
+  return value;
+}
+
+function parseStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError(`${field} must be an array of strings`);
+  }
+
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      throw new ValidationError(`${field} must contain only non-empty strings`);
+    }
+    result.push(entry.trim());
+  }
+
+  return result;
 }
 
 function parseNonNegativeInteger(value: unknown, field: string): number {

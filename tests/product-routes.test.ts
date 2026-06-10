@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as XLSX from '@e965/xlsx';
 import { issueAccessToken } from '@/domain/auth/tokens.js';
-import type { ProductCategory, Role, StockMovementType, UserStatus } from '@/domain/shared/types.js';
+import type {
+  CategoryMappingSource,
+  CategoryReviewStatus,
+  ProductCategory,
+  ProductSaleStatus,
+  Role,
+  StockMovementType,
+  UserStatus,
+} from '@/domain/shared/types.js';
 import { buildTestServer as _buildTestServer } from './helpers.js';
 import type { PrismaClient } from '@prisma/client';
 
@@ -70,6 +79,91 @@ describe('product routes', () => {
 
     expect(response.statusCode).toBe(404);
     expect(body.error.code).toBe('ARTIST_NOT_FOUND');
+
+    await server.close();
+  });
+
+  it('creates product with all Slice 3.0 fields and returns them through the response', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({
+      id: 'KODY-PROD-000010',
+      labelName: 'BELIFT LAB',
+      releaseDateText: '2026-08-01',
+      stockManaged: false,
+      saleStatus: 'ON_SALE',
+      isDisplayed: true,
+      categoryMappingSource: 'MANUAL',
+      sourceCategoryCodes: ['CATE70', 'CATE65'],
+      categoryReviewStatus: 'MAPPED',
+    });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 10,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        labelName: 'BELIFT LAB',
+        releaseDateText: '2026-08-01',
+        stockManaged: false,
+        saleStatus: 'ON_SALE',
+        isDisplayed: true,
+        categoryMappingSource: 'MANUAL',
+        sourceCategoryCodes: ['CATE70', 'CATE65'],
+        categoryReviewStatus: 'MAPPED',
+      }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.data.labelName).toBe('BELIFT LAB');
+    expect(body.data.releaseDateText).toBe('2026-08-01');
+    expect(body.data.stockManaged).toBe(false);
+    expect(body.data.saleStatus).toBe('ON_SALE');
+    expect(body.data.isDisplayed).toBe(true);
+    expect(body.data.categoryMappingSource).toBe('MANUAL');
+    expect(body.data.sourceCategoryCodes).toEqual(['CATE70', 'CATE65']);
+    expect(body.data.categoryReviewStatus).toBe('MAPPED');
+
+    const createCall = prisma.product.create.mock.calls[0][0];
+    expect(createCall.data).toMatchObject({
+      labelName: 'BELIFT LAB',
+      releaseDateText: '2026-08-01',
+      stockManaged: false,
+      saleStatus: 'ON_SALE',
+      isDisplayed: true,
+      categoryMappingSource: 'MANUAL',
+      sourceCategoryCodes: ['CATE70', 'CATE65'],
+      categoryReviewStatus: 'MAPPED',
+    });
+
+    await server.close();
+  });
+
+  it('rejects invalid saleStatus on POST /products as VALIDATION_ERROR', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ saleStatus: 'NOT_A_STATUS' }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
 
     await server.close();
   });
@@ -227,6 +321,36 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('updates nullable form fields on PATCH /products/:id', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ artistId: ARTIST_ID, category: 'ALBUM', weightG: 150 });
+    const updated = buildStoredProduct({ artistId: null, category: null, weightG: null });
+    const prisma = buildPrisma({ actor, products: [product], updatedProduct: updated });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { artistId: null, category: null, weightG: null },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.artistId).toBeNull();
+    expect(body.data.category).toBeNull();
+    expect(body.data.weightG).toBeNull();
+    expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({
+      artistId: null,
+      category: null,
+      weightG: null,
+    });
+
+    await server.close();
+  });
+
   it('returns 404 on PATCH /products/:id when not found', async () => {
     const actor = buildActor();
     const prisma = buildPrisma({ actor, products: [] });
@@ -359,6 +483,163 @@ describe('product routes', () => {
     await server.close();
   });
 
+  // ── Excel import/export routes ─────────────────────────────────────────────
+
+  it('dry-runs Imweb XLSX uploads for OPERATIONS and returns warning evidence without DB writes', async () => {
+    const actor = buildActor({ roles: ['OPERATIONS'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+    const contentBase64 = workbookBase64([
+      validImwebExcelRow({ 상품번호: '6571', 카테고리ID: 'CATE999', 판매가: '가격없음' }),
+    ]);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/dry-run',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        fileName: 'imweb-products.xlsx',
+        contentBase64,
+        sizeBytes: Buffer.byteLength(contentBase64, 'base64'),
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.summary.totalRows).toBe(1);
+    expect(body.data.items[0].warningCodes).toEqual(expect.arrayContaining(['CATEGORY_FALLBACK_GOODS', 'MISSING_PRICE']));
+    expect(body.data.items[0].reviewRequired).toBe(true);
+    expect(prisma.product.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects SALES from Imweb XLSX dry-run', async () => {
+    const actor = buildActor({ roles: ['SALES'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+    const contentBase64 = workbookBase64([validImwebExcelRow()]);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/dry-run',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        fileName: 'imweb-products.xlsx',
+        contentBase64,
+        sizeBytes: Buffer.byteLength(contentBase64, 'base64'),
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.error.code).toBe('AUTHORIZATION_ERROR');
+
+    await server.close();
+  });
+
+  it('keeps Excel import commit as an explicit disabled gate', async () => {
+    const actor = buildActor({ roles: ['FINANCE'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/commit',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { batchId: 'dryrun_1' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.error.code).toBe('COMMIT_DISABLED');
+
+    await server.close();
+  });
+
+  it('exports selected products as base64 XLSX with a parseable Imweb sheet', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({
+      id: 'KODY-PROD-000001',
+      name: 'Album A',
+      labelName: 'BELIFT LAB',
+      releaseDateText: '2026-04-30',
+      weightG: 65,
+      stockManaged: true,
+      saleStatus: 'ON_SALE',
+      isDisplayed: true,
+      sourceCategoryCodes: ['CATE70'],
+      categoryReviewStatus: 'MAPPED',
+    });
+    product.sku = 'YP0885';
+    product.barcode = '8809704435086';
+    product.stockOnHand = 14;
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/export/imweb',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { productIds: ['KODY-PROD-000001'] },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.contentType).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const workbook = XLSX.read(Buffer.from(body.data.contentBase64, 'base64'), { type: 'buffer' });
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets['상품'], { defval: '' });
+    expect(rows[0]).toMatchObject({ 상품번호: 'KODY-PROD-000001', 상품명: 'Album A', 브랜드: 'BELIFT LAB', 원산지: '8809704435086', 무게: 0.065 });
+
+    await server.close();
+  });
+
+  it('rejects SALES from selected Imweb export', async () => {
+    const actor = buildActor({ id: 'user_sales', roles: ['SALES'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/export/imweb',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { productIds: [PRODUCT_ID] },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.error.code).toBe('AUTHORIZATION_ERROR');
+
+    await server.close();
+  });
+
+  it('rejects Imweb export selections over the server cap', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/export/imweb',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { productIds: Array.from({ length: 501 }, (_, index) => `KODY-PROD-${index}`) },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(413);
+    expect(body.error.code).toBe('SELECTION_LIMIT_EXCEEDED');
+
+    await server.close();
+  });
+
   // ── GET /products/:id/movements ────────────────────────────────────────────
 
   it('returns movement list on GET /products/:id/movements', async () => {
@@ -387,7 +668,35 @@ describe('product routes', () => {
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
-function validCreatePayload(overrides: Partial<Record<'artistId' | 'category' | 'weightG', unknown>> = {}) {
+function workbookBase64(rows: Record<string, unknown>[]): string {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), '상품');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  return buffer.toString('base64');
+}
+
+function validImwebExcelRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    상품번호: '6571',
+    상품명: 'ILLIT - Album',
+    카테고리ID: 'CATE70,CATE65',
+    판매상태: '판매중',
+    진열상태: 'Y',
+    판매가: '17440',
+    무게: '1',
+    원가: '0',
+    재고사용: 'Y',
+    '현재 재고수량': '14',
+    재고번호SKU: 'YP0885',
+    원산지: '8809704435086',
+    제조사: '2026-04-30',
+    브랜드: 'BELIFT LAB',
+    옵션사용: 'N',
+    ...overrides,
+  };
+}
+
+function validCreatePayload(overrides: Partial<Record<string, unknown>> = {}) {
   const payload: Record<string, unknown> = {
     artistId: ARTIST_ID,
     category: 'ALBUM' as ProductCategory,
@@ -438,20 +747,37 @@ function buildStoredArtist(overrides: Partial<{ id: string; name: string }> = {}
 
 function buildStoredProduct(overrides: Partial<{
   id: string; name: string; artistId: string | null; category: ProductCategory | null; weightG: number | null;
+  labelName: string | null; releaseDateText: string | null; stockManaged: boolean; saleStatus: ProductSaleStatus;
+  isDisplayed: boolean; categoryMappingSource: CategoryMappingSource; sourceCategoryCodes: string[];
+  categoryReviewStatus: CategoryReviewStatus; thumbnailUrl: string | null; detailHtml: string | null;
 }> = {}) {
   return {
     id: overrides.id ?? PRODUCT_ID,
     artistId: overrides.artistId === undefined ? ARTIST_ID : overrides.artistId,
     category: overrides.category === undefined ? 'ALBUM' as ProductCategory : overrides.category,
     name: overrides.name ?? 'Standard Album',
+    labelName: overrides.labelName === undefined ? null : overrides.labelName,
+    thumbnailUrl: overrides.thumbnailUrl === undefined ? null : overrides.thumbnailUrl,
+    detailHtml: overrides.detailHtml === undefined ? null : overrides.detailHtml,
+    releaseDateText: overrides.releaseDateText === undefined ? null : overrides.releaseDateText,
     weightG: overrides.weightG === undefined ? 150 : overrides.weightG,
-    priceKRW: 15000,
+    priceKRW: '15000.0000',
+    priceStatus: 'CONFIRMED' as const,
+    lastConfirmedPriceKRW: '15000.0000',
+    lastConfirmedPriceAt: new Date('2026-05-27T00:00:00Z'),
+    sourcePriceRaw: '15000',
     sku: null,
     barcode: null,
     avgPurchasePriceKRW: 12000,
+    stockManaged: overrides.stockManaged ?? true,
     stockOnHand: 0,
     orderBasedStock: 0,
     shipmentBasedStock: 0,
+    saleStatus: overrides.saleStatus ?? ('DRAFT' as ProductSaleStatus),
+    isDisplayed: overrides.isDisplayed ?? false,
+    categoryMappingSource: overrides.categoryMappingSource ?? ('EXACT' as CategoryMappingSource),
+    sourceCategoryCodes: overrides.sourceCategoryCodes ?? [],
+    categoryReviewStatus: overrides.categoryReviewStatus ?? ('PENDING' as CategoryReviewStatus),
     createdAt: new Date('2026-05-27T00:00:00Z'),
     updatedAt: new Date('2026-05-27T00:00:00Z'),
   };
@@ -519,6 +845,12 @@ function buildPrisma(input: PrismaInput) {
     },
     productSequence: {
       upsert: vi.fn(async () => ({ key: 'KODY-PROD', lastSeq: input.nextProductSeq ?? 1 })),
+    },
+    productExternalMapping: {
+      findUnique: vi.fn(async () => null),
+      findMany: vi.fn(async () => []),
+      create: vi.fn(async () => { throw new Error('not used'); }),
+      update: vi.fn(async () => { throw new Error('not used'); }),
     },
     stockMovement: {
       create: vi.fn(async () => {

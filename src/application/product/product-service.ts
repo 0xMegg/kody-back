@@ -1,9 +1,23 @@
 import { DomainRuleError } from '@/domain/shared/errors.js';
-import type { ProductCategory, StockMovementType } from '@/domain/shared/types.js';
+import type {
+  CategoryMappingSource,
+  CategoryReviewStatus,
+  ProductCategory,
+  ProductSaleStatus,
+  StockMovementType,
+} from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 import type { ImwebMappedProduct, ImwebProductPriceStatus, ImwebWarningIssue } from '@/application/product/imweb-product-importer.js';
+import {
+  buildImwebExportWorkbook,
+  type ImwebExportWorkbookResult,
+  type ImwebExportProductInput,
+} from '@/application/product/product-excel-workflow.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
+const PRODUCT_SALE_STATUSES: readonly ProductSaleStatus[] = ['ON_SALE', 'OFF_SALE', 'SOLD_OUT', 'DRAFT'];
+const CATEGORY_MAPPING_SOURCES: readonly CategoryMappingSource[] = ['EXACT', 'FALLBACK', 'MANUAL'];
+const CATEGORY_REVIEW_STATUSES: readonly CategoryReviewStatus[] = ['PENDING', 'MAPPED', 'NEEDS_REVIEW'];
 
 const DEFAULT_LIST_LIMIT = 20;
 const MIN_LIST_LIMIT = 1;
@@ -18,11 +32,26 @@ export interface ArtistSummary {
   createdAt: Date;
 }
 
+export interface ProductExternalMappingSummary {
+  id: string;
+  sourceSystem: string;
+  externalProductId: string;
+  externalUrl: string | null;
+  status: string;
+  firstSeenAt: Date;
+  lastSyncedAt: Date;
+}
+
 export interface ProductSummary {
   id: string;
   artistId: string | null;
   category: ProductCategory | null;
   name: string;
+  labelName: string | null;
+  thumbnailUrl: string | null;
+  detailHtml: string | null;
+  externalMappings?: ProductExternalMappingSummary[];
+  releaseDateText: string | null;
   weightG: number | null;
   priceKRW: string;
   priceStatus: ProductPriceStatus;
@@ -32,9 +61,15 @@ export interface ProductSummary {
   sku: string | null;
   barcode: string | null;
   avgPurchasePriceKRW: number;
+  stockManaged: boolean;
   stockOnHand: number;
   orderBasedStock: number;
   shipmentBasedStock: number;
+  saleStatus: ProductSaleStatus;
+  isDisplayed: boolean;
+  categoryMappingSource: CategoryMappingSource;
+  sourceCategoryCodes: string[];
+  categoryReviewStatus: CategoryReviewStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -59,11 +94,19 @@ export interface CreateProductInput {
   artistId?: string;
   category?: ProductCategory;
   name: string;
+  labelName?: string | null;
+  releaseDateText?: string | null;
   weightG?: number;
   priceKRW: string | number;
   sku?: string;
   barcode?: string;
   avgPurchasePriceKRW?: number;
+  stockManaged?: boolean;
+  saleStatus?: ProductSaleStatus;
+  isDisplayed?: boolean;
+  categoryMappingSource?: CategoryMappingSource;
+  sourceCategoryCodes?: string[];
+  categoryReviewStatus?: CategoryReviewStatus;
   ipAddress?: string;
   userAgent?: string;
 }
@@ -84,12 +127,22 @@ export interface ListProductsResult {
 export interface UpdateProductInput {
   actorUserId: string;
   productId: string;
+  artistId?: string | null;
+  category?: ProductCategory | null;
   name?: string;
-  weightG?: number;
+  labelName?: string | null;
+  releaseDateText?: string | null;
+  weightG?: number | null;
   priceKRW?: string | number;
   sku?: string | null;
   barcode?: string | null;
   avgPurchasePriceKRW?: number;
+  stockManaged?: boolean;
+  saleStatus?: ProductSaleStatus;
+  isDisplayed?: boolean;
+  categoryMappingSource?: CategoryMappingSource;
+  sourceCategoryCodes?: string[];
+  categoryReviewStatus?: CategoryReviewStatus;
   ipAddress?: string;
   userAgent?: string;
 }
@@ -143,6 +196,10 @@ interface StoredProduct {
   artistId: string | null;
   category: ProductCategory | null;
   name: string;
+  labelName: string | null;
+  thumbnailUrl: string | null;
+  detailHtml: string | null;
+  releaseDateText: string | null;
   weightG: number | null;
   priceKRW: string;
   priceStatus: ProductPriceStatus;
@@ -152,9 +209,15 @@ interface StoredProduct {
   sku: string | null;
   barcode: string | null;
   avgPurchasePriceKRW: number;
+  stockManaged: boolean;
   stockOnHand: number;
   orderBasedStock: number;
   shipmentBasedStock: number;
+  saleStatus: ProductSaleStatus;
+  isDisplayed: boolean;
+  categoryMappingSource: CategoryMappingSource;
+  sourceCategoryCodes: string[];
+  categoryReviewStatus: CategoryReviewStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -174,6 +237,10 @@ interface StoredProductExternalMapping {
   productId: string;
   sourceSystem: string;
   externalProductId: string;
+  externalUrl: string | null;
+  firstSeenAt: Date;
+  lastSyncedAt: Date;
+  status: string;
 }
 
 interface ProductRepository {
@@ -209,6 +276,10 @@ interface ProductRepository {
     findUnique(args: {
       where: { sourceSystem_externalProductId: { sourceSystem: string; externalProductId: string } };
     }): Promise<StoredProductExternalMapping | null>;
+    findMany(args: {
+      where: { productId: string };
+      orderBy: Array<Record<string, 'asc' | 'desc'>>;
+    }): Promise<StoredProductExternalMapping[]>;
     create(args: { data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
     update(args: { where: { id: string }; data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
   };
@@ -270,6 +341,14 @@ export class ProductService {
     const artistId = input.artistId === undefined ? undefined : normalizeRequiredString(input.artistId, 'artistId');
     const category = input.category === undefined ? undefined : normalizeCategory(input.category);
     const name = normalizeRequiredString(input.name, 'name');
+    const labelName =
+      input.labelName === undefined ? undefined : input.labelName === null ? null : normalizeOptionalString(input.labelName) ?? null;
+    const releaseDateText =
+      input.releaseDateText === undefined
+        ? undefined
+        : input.releaseDateText === null
+          ? null
+          : normalizeOptionalString(input.releaseDateText) ?? null;
     const weightG = input.weightG === undefined ? undefined : normalizeNonNegativeInteger(input.weightG, 'weightG');
     const priceKRW = normalizeNonNegativeDecimal(input.priceKRW, 'priceKRW', 4);
     const sku = input.sku === undefined ? undefined : normalizeOptionalString(input.sku);
@@ -279,6 +358,24 @@ export class ProductService {
       input.avgPurchasePriceKRW === undefined
         ? 0
         : normalizeNonNegativeInteger(input.avgPurchasePriceKRW, 'avgPurchasePriceKRW');
+    const stockManaged =
+      input.stockManaged === undefined ? undefined : normalizeBoolean(input.stockManaged, 'stockManaged');
+    const saleStatus =
+      input.saleStatus === undefined ? undefined : normalizeSaleStatus(input.saleStatus);
+    const isDisplayed =
+      input.isDisplayed === undefined ? undefined : normalizeBoolean(input.isDisplayed, 'isDisplayed');
+    const categoryMappingSource =
+      input.categoryMappingSource === undefined
+        ? undefined
+        : normalizeCategoryMappingSource(input.categoryMappingSource);
+    const sourceCategoryCodes =
+      input.sourceCategoryCodes === undefined
+        ? undefined
+        : normalizeStringArray(input.sourceCategoryCodes, 'sourceCategoryCodes');
+    const categoryReviewStatus =
+      input.categoryReviewStatus === undefined
+        ? undefined
+        : normalizeCategoryReviewStatus(input.categoryReviewStatus);
 
     if (artistId !== undefined) {
       await this.findArtist(artistId);
@@ -299,6 +396,8 @@ export class ProductService {
         ...(artistId !== undefined ? { artistId } : {}),
         ...(category !== undefined ? { category } : {}),
         name,
+        ...(labelName !== undefined ? { labelName } : {}),
+        ...(releaseDateText !== undefined ? { releaseDateText } : {}),
         ...(weightG !== undefined ? { weightG } : {}),
         priceKRW,
         priceStatus: 'CONFIRMED',
@@ -308,6 +407,12 @@ export class ProductService {
         avgPurchasePriceKRW,
         ...(sku !== undefined ? { sku } : {}),
         ...(barcode !== undefined ? { barcode } : {}),
+        ...(stockManaged !== undefined ? { stockManaged } : {}),
+        ...(saleStatus !== undefined ? { saleStatus } : {}),
+        ...(isDisplayed !== undefined ? { isDisplayed } : {}),
+        ...(categoryMappingSource !== undefined ? { categoryMappingSource } : {}),
+        ...(sourceCategoryCodes !== undefined ? { sourceCategoryCodes } : {}),
+        ...(categoryReviewStatus !== undefined ? { categoryReviewStatus } : {}),
       },
     });
 
@@ -359,15 +464,38 @@ export class ProductService {
     const nextCursor = hasMore ? sliced[sliced.length - 1].id : null;
 
     return {
-      items: sliced.map(toProductSummary),
+      items: sliced.map((product) => toProductSummary(product)),
       nextCursor,
     };
+  }
+
+  async exportImwebProducts(productIds: readonly string[]): Promise<ImwebExportWorkbookResult> {
+    if (productIds.length === 0) {
+      throw new DomainRuleError('EMPTY_PRODUCT_SELECTION', 'productIds must include at least one product id', 400);
+    }
+    const uniqueProductIds = [...new Set(productIds)];
+    const products = await this.repository.product.findMany({
+      where: { id: { in: uniqueProductIds } },
+      orderBy: [{ id: 'asc' }],
+      take: uniqueProductIds.length,
+    });
+    const foundIds = new Set(products.map((product) => product.id));
+    const missingIds = uniqueProductIds.filter((productId) => !foundIds.has(productId));
+    if (missingIds.length > 0) {
+      throw new DomainRuleError('PRODUCT_NOT_FOUND', `Product not found: ${missingIds.join(', ')}`, 404);
+    }
+
+    return buildImwebExportWorkbook(products.map(toProductExportInput));
   }
 
   async getProduct(productId: string): Promise<ProductSummary> {
     const id = normalizeRequiredString(productId, 'productId');
     const product = await this.findProduct(id);
-    return toProductSummary(product);
+    const externalMappings = await this.repository.productExternalMapping.findMany({
+      where: { productId: id },
+      orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
+    });
+    return toProductSummary(product, externalMappings);
   }
 
   async updateProduct(input: UpdateProductInput): Promise<ProductSummary> {
@@ -377,6 +505,27 @@ export class ProductService {
     const changes: Record<string, unknown> = {};
     const beforeJson: Record<string, unknown> = {};
     const afterJson: Record<string, unknown> = {};
+
+    if (input.artistId !== undefined) {
+      const artistId = input.artistId === null ? null : normalizeRequiredString(input.artistId, 'artistId');
+      if (artistId !== current.artistId) {
+        if (artistId !== null) {
+          await this.findArtist(artistId);
+        }
+        changes.artistId = artistId;
+        beforeJson.artistId = current.artistId;
+        afterJson.artistId = artistId;
+      }
+    }
+
+    if (input.category !== undefined) {
+      const category = input.category === null ? null : normalizeCategory(input.category);
+      if (category !== current.category) {
+        changes.category = category;
+        beforeJson.category = current.category;
+        afterJson.category = category;
+      }
+    }
 
     if (input.name !== undefined) {
       const name = normalizeRequiredString(input.name, 'name');
@@ -388,7 +537,7 @@ export class ProductService {
     }
 
     if (input.weightG !== undefined) {
-      const weightG = normalizeNonNegativeInteger(input.weightG, 'weightG');
+      const weightG = input.weightG === null ? null : normalizeNonNegativeInteger(input.weightG, 'weightG');
       if (weightG !== current.weightG) {
         changes.weightG = weightG;
         beforeJson.weightG = current.weightG;
@@ -445,6 +594,85 @@ export class ProductService {
         changes.avgPurchasePriceKRW = avgPurchasePriceKRW;
         beforeJson.avgPurchasePriceKRW = current.avgPurchasePriceKRW;
         afterJson.avgPurchasePriceKRW = avgPurchasePriceKRW;
+      }
+    }
+
+    if (input.labelName !== undefined) {
+      const labelName =
+        input.labelName === null ? null : normalizeOptionalString(input.labelName) ?? null;
+      if (labelName !== current.labelName) {
+        changes.labelName = labelName;
+        beforeJson.labelName = current.labelName;
+        afterJson.labelName = labelName;
+      }
+    }
+
+    if (input.releaseDateText !== undefined) {
+      const releaseDateText =
+        input.releaseDateText === null
+          ? null
+          : normalizeOptionalString(input.releaseDateText) ?? null;
+      if (releaseDateText !== current.releaseDateText) {
+        changes.releaseDateText = releaseDateText;
+        beforeJson.releaseDateText = current.releaseDateText;
+        afterJson.releaseDateText = releaseDateText;
+      }
+    }
+
+    if (input.stockManaged !== undefined) {
+      const stockManaged = normalizeBoolean(input.stockManaged, 'stockManaged');
+      if (stockManaged !== current.stockManaged) {
+        changes.stockManaged = stockManaged;
+        beforeJson.stockManaged = current.stockManaged;
+        afterJson.stockManaged = stockManaged;
+      }
+    }
+
+    if (input.saleStatus !== undefined) {
+      const saleStatus = normalizeSaleStatus(input.saleStatus);
+      if (saleStatus !== current.saleStatus) {
+        changes.saleStatus = saleStatus;
+        beforeJson.saleStatus = current.saleStatus;
+        afterJson.saleStatus = saleStatus;
+      }
+    }
+
+    if (input.isDisplayed !== undefined) {
+      const isDisplayed = normalizeBoolean(input.isDisplayed, 'isDisplayed');
+      if (isDisplayed !== current.isDisplayed) {
+        changes.isDisplayed = isDisplayed;
+        beforeJson.isDisplayed = current.isDisplayed;
+        afterJson.isDisplayed = isDisplayed;
+      }
+    }
+
+    if (input.categoryMappingSource !== undefined) {
+      const categoryMappingSource = normalizeCategoryMappingSource(input.categoryMappingSource);
+      if (categoryMappingSource !== current.categoryMappingSource) {
+        changes.categoryMappingSource = categoryMappingSource;
+        beforeJson.categoryMappingSource = current.categoryMappingSource;
+        afterJson.categoryMappingSource = categoryMappingSource;
+      }
+    }
+
+    if (input.sourceCategoryCodes !== undefined) {
+      const sourceCategoryCodes = normalizeStringArray(
+        input.sourceCategoryCodes,
+        'sourceCategoryCodes',
+      );
+      if (!stringArraysEqual(sourceCategoryCodes, current.sourceCategoryCodes)) {
+        changes.sourceCategoryCodes = sourceCategoryCodes;
+        beforeJson.sourceCategoryCodes = [...current.sourceCategoryCodes];
+        afterJson.sourceCategoryCodes = sourceCategoryCodes;
+      }
+    }
+
+    if (input.categoryReviewStatus !== undefined) {
+      const categoryReviewStatus = normalizeCategoryReviewStatus(input.categoryReviewStatus);
+      if (categoryReviewStatus !== current.categoryReviewStatus) {
+        changes.categoryReviewStatus = categoryReviewStatus;
+        beforeJson.categoryReviewStatus = current.categoryReviewStatus;
+        afterJson.categoryReviewStatus = categoryReviewStatus;
       }
     }
 
@@ -757,6 +985,23 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed === '' ? undefined : trimmed;
 }
 
+function normalizeAllowedHttpUrl(value: unknown): string | null {
+  const normalized = normalizeOptionalString(value);
+  if (normalized === undefined) {
+    return null;
+  }
+
+  try {
+    const url = new URL(normalized);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function normalizeCategory(value: unknown): ProductCategory {
   if (typeof value !== 'string' || !PRODUCT_CATEGORIES.includes(value as ProductCategory)) {
     throw new DomainRuleError(
@@ -767,6 +1012,84 @@ function normalizeCategory(value: unknown): ProductCategory {
   }
 
   return value as ProductCategory;
+}
+
+function normalizeSaleStatus(value: unknown): ProductSaleStatus {
+  if (typeof value !== 'string' || !PRODUCT_SALE_STATUSES.includes(value as ProductSaleStatus)) {
+    throw new DomainRuleError(
+      'VALIDATION_ERROR',
+      `saleStatus must be one of: ${PRODUCT_SALE_STATUSES.join(', ')}`,
+      400,
+    );
+  }
+
+  return value as ProductSaleStatus;
+}
+
+function normalizeCategoryMappingSource(value: unknown): CategoryMappingSource {
+  if (
+    typeof value !== 'string' ||
+    !CATEGORY_MAPPING_SOURCES.includes(value as CategoryMappingSource)
+  ) {
+    throw new DomainRuleError(
+      'VALIDATION_ERROR',
+      `categoryMappingSource must be one of: ${CATEGORY_MAPPING_SOURCES.join(', ')}`,
+      400,
+    );
+  }
+
+  return value as CategoryMappingSource;
+}
+
+function normalizeCategoryReviewStatus(value: unknown): CategoryReviewStatus {
+  if (
+    typeof value !== 'string' ||
+    !CATEGORY_REVIEW_STATUSES.includes(value as CategoryReviewStatus)
+  ) {
+    throw new DomainRuleError(
+      'VALIDATION_ERROR',
+      `categoryReviewStatus must be one of: ${CATEGORY_REVIEW_STATUSES.join(', ')}`,
+      400,
+    );
+  }
+
+  return value as CategoryReviewStatus;
+}
+
+function normalizeBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be a boolean`, 400);
+  }
+
+  return value;
+}
+
+function normalizeStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be an array of strings`, 400);
+  }
+
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      throw new DomainRuleError(
+        'VALIDATION_ERROR',
+        `${field} must contain only non-empty strings`,
+        400,
+      );
+    }
+    result.push(entry.trim());
+  }
+
+  return result;
+}
+
+function stringArraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function normalizeNonNegativeInteger(value: unknown, field: string): number {
@@ -811,13 +1134,16 @@ function normalizeQuantity(value: unknown): number {
 
 function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredProduct): Record<string, unknown> {
   const priceFields = toImwebPriceWriteData(mapped, current);
+  const thumbnailUrl = normalizeOptionalString(mapped.thumbnailUrl);
+  const detailHtml = normalizeOptionalString(mapped.detailHtml);
   return {
     category: mapped.category,
     categoryMappingSource: mapped.categoryMappingSource,
     sourceCategoryCodes: mapped.rawCategoryIds,
     name: mapped.name,
     labelName: normalizeOptionalString(mapped.artistName) ?? null,
-    thumbnailUrl: normalizeOptionalString(mapped.thumbnailUrl) ?? null,
+    ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
+    ...(detailHtml !== undefined ? { detailHtml } : {}),
     weightG: mapped.weightG,
     ...priceFields,
     sku: normalizeOptionalString(mapped.sku) ?? null,
@@ -862,14 +1188,14 @@ function toImwebPriceWriteData(mapped: ImwebMappedProduct, current?: StoredProdu
 
 function toImwebMappingRefreshData(input: UpsertImwebProductInput): Record<string, unknown> {
   return {
-    externalUrl: normalizeOptionalString(input.mapped.productUrl) ?? null,
+    externalUrl: normalizeAllowedHttpUrl(input.mapped.productUrl),
     lastImportBatchId: input.importBatchId ?? null,
     lastRawHash: input.rawHash ?? null,
     status: 'ACTIVE',
   };
 }
 
-function toProductSaleStatus(value: string | null): 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT' {
+function toProductSaleStatus(value: string | null): ProductSaleStatus {
   if (value === '판매중') return 'ON_SALE';
   if (value === '품절') return 'SOLD_OUT';
   if (value === '판매안함' || value === '판매중지' || value === '숨김') return 'OFF_SALE';
@@ -909,12 +1235,20 @@ function toArtistSummary(artist: StoredArtist): ArtistSummary {
   };
 }
 
-function toProductSummary(product: StoredProduct): ProductSummary {
+function toProductSummary(
+  product: StoredProduct,
+  externalMappings?: readonly StoredProductExternalMapping[],
+): ProductSummary {
   return {
     id: product.id,
     artistId: product.artistId,
     category: product.category,
     name: product.name,
+    labelName: product.labelName,
+    thumbnailUrl: product.thumbnailUrl,
+    detailHtml: product.detailHtml,
+    ...(externalMappings !== undefined ? { externalMappings: externalMappings.map(toExternalMappingSummary) } : {}),
+    releaseDateText: product.releaseDateText,
     weightG: product.weightG,
     priceKRW: decimalToString(product.priceKRW, 4),
     priceStatus: product.priceStatus,
@@ -924,11 +1258,47 @@ function toProductSummary(product: StoredProduct): ProductSummary {
     sku: product.sku,
     barcode: product.barcode,
     avgPurchasePriceKRW: product.avgPurchasePriceKRW,
+    stockManaged: product.stockManaged,
     stockOnHand: product.stockOnHand,
     orderBasedStock: product.orderBasedStock,
     shipmentBasedStock: product.shipmentBasedStock,
+    saleStatus: product.saleStatus,
+    isDisplayed: product.isDisplayed,
+    categoryMappingSource: product.categoryMappingSource,
+    sourceCategoryCodes: [...product.sourceCategoryCodes],
+    categoryReviewStatus: product.categoryReviewStatus,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
+  };
+}
+
+function toExternalMappingSummary(mapping: StoredProductExternalMapping): ProductExternalMappingSummary {
+  return {
+    id: mapping.id,
+    sourceSystem: mapping.sourceSystem,
+    externalProductId: mapping.externalProductId,
+    externalUrl: mapping.externalUrl,
+    status: mapping.status,
+    firstSeenAt: mapping.firstSeenAt,
+    lastSyncedAt: mapping.lastSyncedAt,
+  };
+}
+
+function toProductExportInput(product: StoredProduct): ImwebExportProductInput {
+  return {
+    id: product.id,
+    name: product.name,
+    labelName: product.labelName,
+    releaseDateText: product.releaseDateText,
+    weightG: product.weightG,
+    priceKRW: decimalToString(product.priceKRW, 4),
+    sku: product.sku,
+    barcode: product.barcode,
+    stockOnHand: product.stockOnHand,
+    stockManaged: product.stockManaged,
+    saleStatus: product.saleStatus,
+    isDisplayed: product.isDisplayed,
+    sourceCategoryCodes: [...product.sourceCategoryCodes],
   };
 }
 
@@ -949,6 +1319,10 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
     artistId: product.artistId,
     category: product.category,
     name: product.name,
+    labelName: product.labelName,
+    thumbnailUrl: product.thumbnailUrl,
+    detailHtml: product.detailHtml,
+    releaseDateText: product.releaseDateText,
     weightG: product.weightG,
     priceKRW: decimalToString(product.priceKRW, 4),
     priceStatus: product.priceStatus,
@@ -957,5 +1331,11 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
     sku: product.sku,
     barcode: product.barcode,
     avgPurchasePriceKRW: product.avgPurchasePriceKRW,
+    stockManaged: product.stockManaged,
+    saleStatus: product.saleStatus,
+    isDisplayed: product.isDisplayed,
+    categoryMappingSource: product.categoryMappingSource,
+    sourceCategoryCodes: [...product.sourceCategoryCodes],
+    categoryReviewStatus: product.categoryReviewStatus,
   };
 }

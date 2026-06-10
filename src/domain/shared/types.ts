@@ -13,6 +13,18 @@ export type ShipmentItemStatus = 'NOT_SHIPPED' | 'PENDING' | 'COMPLETED';
 
 export type ProductCategory = 'ALBUM' | 'PHOTOCARD' | 'GOODS';
 
+export type ProductSaleStatus = 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT';
+
+export type ProductPriceStatus =
+  | 'CONFIRMED'
+  | 'MISSING'
+  | 'ZERO_NEEDS_REVIEW'
+  | 'STALE_NEEDS_RECONFIRM';
+
+export type CategoryReviewStatus = 'PENDING' | 'MAPPED' | 'NEEDS_REVIEW';
+
+export type CategoryMappingSource = 'EXACT' | 'FALLBACK' | 'MANUAL';
+
 export type Incoterm = 'EXW' | 'FOB' | 'CIF' | 'DDP' | 'DAP';
 
 export type DepositSource = 'NONGHYUP' | 'HANA' | 'PAYPAL' | 'PAYONEER';

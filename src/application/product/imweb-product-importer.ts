@@ -60,6 +60,7 @@ export interface ImwebMappedProduct {
   displayStatus: boolean;
   productUrl: string | null;
   thumbnailUrl: string | null;
+  detailHtml: string | null;
 }
 
 export interface ImwebDryRunItem {
@@ -151,6 +152,7 @@ export function parseImwebProductRow(
       displayStatus: parseYn(row, '진열상태', false, warnings),
       productUrl: readOptionalString(row, '상품URL'),
       thumbnailUrl: readOptionalString(row, '대표이미지URL'),
+      detailHtml: readOptionalString(row, '상품상세정보'),
     },
     errors,
     warnings,
