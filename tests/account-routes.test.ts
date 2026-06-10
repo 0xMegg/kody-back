@@ -675,6 +675,104 @@ describe('account routes', () => {
 
     await server.close();
   });
+
+  it('returns customer detail with recent order product context', async () => {
+    const actor = buildActor({ id: 'sales_1', roles: ['SALES'] });
+    const account = buildStoredAccount({ id: 'acc_customer' });
+    const order = buildStoredOrder({ accountId: account.id });
+    const prisma = buildPrisma({ actor, accounts: [account], orders: [order] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/accounts/${account.id}/customer-detail`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.account.id).toBe(account.id);
+    expect(body.data.recentOrders).toHaveLength(1);
+    expect(body.data.recentOrders[0]).toMatchObject({
+      id: order.id,
+      total: '116.00',
+      items: [
+        {
+          kodyProductId: 'prod_1',
+          name: 'KODY Album',
+          category: 'ALBUM',
+          categoryReviewStatus: 'MAPPED',
+          sourceCategoryCodes: ['imweb-album'],
+        },
+      ],
+    });
+    expect(prisma.order.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { accountId: account.id },
+        take: 10,
+      }),
+    );
+
+    await server.close();
+  });
+
+  it('manages shipping addresses and keeps a single primary address', async () => {
+    const actor = buildActor({ id: 'ops_1', roles: ['OPERATIONS'] });
+    const account = buildStoredAccount({ id: 'acc_ship' });
+    const address = buildStoredShippingAddress({ accountId: account.id });
+    const createdAddress = buildStoredShippingAddress({
+      id: 'addr_created',
+      accountId: account.id,
+      label: 'Osaka warehouse',
+      isPrimary: true,
+      defaultIncoterm: 'FOB',
+    });
+    const prisma = buildPrisma({
+      actor,
+      accounts: [account],
+      shippingAddresses: [address],
+      createdShippingAddress: createdAddress,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const listResponse = await server.inject({
+      method: 'GET',
+      url: `/accounts/${account.id}/addresses`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json().data).toMatchObject([
+      { id: address.id, accountId: account.id, label: address.label },
+    ]);
+
+    const createResponse = await server.inject({
+      method: 'POST',
+      url: `/accounts/${account.id}/addresses`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        label: 'Osaka warehouse',
+        country: 'JP',
+        fullAddress: 'Osaka test address',
+        isPrimary: true,
+        defaultIncoterm: 'FOB',
+      },
+    });
+    expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.json().data).toMatchObject({
+      id: createdAddress.id,
+      isPrimary: true,
+      defaultIncoterm: 'FOB',
+    });
+    expect(prisma.shippingAddress.updateMany).toHaveBeenCalledWith({
+      where: { accountId: account.id, isPrimary: true },
+      data: { isPrimary: false },
+    });
+
+    await server.close();
+  });
 });
 
 function validCreatePayload() {
@@ -768,12 +866,64 @@ function buildStoredAccount(overrides: Partial<{
   };
 }
 
+function buildStoredOrder(overrides: Partial<{ id: string; accountId: string }> = {}) {
+  return {
+    id: overrides.id ?? 'ord_1',
+    accountId: overrides.accountId ?? 'acc_default',
+    orderDate: new Date('2026-05-20T00:00:00.000Z'),
+    status: 'CONFIRMED',
+    currency: 'USD',
+    shippingFee: '10.00',
+    remittanceFee: '6.00',
+    items: [
+      {
+        subtotal: '100.00',
+        product: {
+          id: 'prod_1',
+          name: 'KODY Album',
+          category: 'ALBUM',
+          categoryMappingSource: 'EXACT',
+          categoryReviewStatus: 'MAPPED',
+          sourceCategoryCodes: ['imweb-album'],
+          thumbnailUrl: null,
+        },
+      },
+    ],
+  };
+}
+
+function buildStoredShippingAddress(overrides: Partial<{
+  id: string;
+  accountId: string;
+  label: string;
+  country: string;
+  fullAddress: string;
+  isPrimary: boolean;
+  defaultIncoterm: 'EXW' | 'FOB' | 'CIF' | 'DDP' | 'DAP' | null;
+}> = {}) {
+  return {
+    id: overrides.id ?? 'addr_1',
+    accountId: overrides.accountId ?? 'acc_default',
+    label: overrides.label ?? 'Main warehouse',
+    country: overrides.country ?? 'KR',
+    fullAddress: overrides.fullAddress ?? 'Seoul test address',
+    isPrimary: overrides.isPrimary ?? false,
+    defaultIncoterm: overrides.defaultIncoterm === undefined ? 'DDP' : overrides.defaultIncoterm,
+    createdAt: new Date('2026-05-13T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-13T00:00:00.000Z'),
+  };
+}
+
 interface PrismaInput {
   actor: ReturnType<typeof buildActor>;
   accounts?: ReturnType<typeof buildStoredAccount>[];
   salesReps?: ReturnType<typeof buildSalesRep>[];
+  orders?: ReturnType<typeof buildStoredOrder>[];
+  shippingAddresses?: ReturnType<typeof buildStoredShippingAddress>[];
   createdAccount?: ReturnType<typeof buildStoredAccount>;
   updatedAccount?: ReturnType<typeof buildStoredAccount>;
+  createdShippingAddress?: ReturnType<typeof buildStoredShippingAddress>;
+  updatedShippingAddress?: ReturnType<typeof buildStoredShippingAddress>;
 }
 
 function buildPrisma(input: PrismaInput) {
@@ -781,8 +931,11 @@ function buildPrisma(input: PrismaInput) {
   const salesReps = input.salesReps ?? [
     buildSalesRep({ id: 'sales_rep_1', status: 'ACTIVE' }),
   ];
+  const orders = input.orders ?? [];
+  const shippingAddresses = input.shippingAddresses ?? [];
 
-  return {
+  const prisma = {
+    $transaction: vi.fn(async <R>(fn: (tx: unknown) => Promise<R>) => fn(prisma)),
     user: {
       findUnique: vi.fn(async (args: { where: { id: string } }) => {
         if (args.where.id === input.actor.id) {
@@ -807,6 +960,34 @@ function buildPrisma(input: PrismaInput) {
       }),
       update: vi.fn(async () => input.updatedAccount ?? accounts[0]),
     },
+    order: {
+      findMany: vi.fn(async (args: { where: { accountId: string }; take: number }) => {
+        return orders.filter((order) => order.accountId === args.where.accountId).slice(0, args.take);
+      }),
+    },
+    shippingAddress: {
+      create: vi.fn(async () => {
+        if (!input.createdShippingAddress) {
+          throw new Error('createdShippingAddress not provided to test fixture');
+        }
+        return input.createdShippingAddress;
+      }),
+      findUnique: vi.fn(async (args: { where: { id: string } }) => {
+        return shippingAddresses.find((address) => address.id === args.where.id) ?? null;
+      }),
+      findMany: vi.fn(async (args: { where: { accountId: string } }) => {
+        return shippingAddresses.filter((address) => address.accountId === args.where.accountId);
+      }),
+      update: vi.fn(async () => input.updatedShippingAddress ?? shippingAddresses[0]),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      delete: vi.fn(async (args: { where: { id: string } }) => {
+        const address = shippingAddresses.find((item) => item.id === args.where.id);
+        if (!address) {
+          throw new Error('shipping address not found in fixture');
+        }
+        return address;
+      }),
+    },
     refreshToken: {
       findUnique: vi.fn(async () => null),
       create: vi.fn(async () => ({})),
@@ -816,4 +997,6 @@ function buildPrisma(input: PrismaInput) {
       create: vi.fn(async () => ({})),
     },
   };
+
+  return prisma;
 }
