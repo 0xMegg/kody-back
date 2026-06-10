@@ -5,6 +5,7 @@ import type {
   DepositSource,
   OrderStatus,
   ProductCategory,
+  CategoryReviewStatus,
   UserStatus,
 } from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
@@ -33,6 +34,7 @@ export interface AccountCustomerProductChip {
   name: string;
   category: ProductCategory | null;
   categoryMappingSource: CategoryMappingSource;
+  categoryReviewStatus: CategoryReviewStatus;
   sourceCategoryCodes: string[];
   thumbnailUrl: string | null;
 }
@@ -115,6 +117,7 @@ interface StoredOrderProductLite {
   name: string;
   category: ProductCategory | null;
   categoryMappingSource: CategoryMappingSource;
+  categoryReviewStatus: CategoryReviewStatus;
   sourceCategoryCodes: string[];
   thumbnailUrl: string | null;
 }
@@ -238,6 +241,7 @@ export class AccountService {
                 name: true,
                 category: true,
                 categoryMappingSource: true,
+                categoryReviewStatus: true,
                 sourceCategoryCodes: true,
                 thumbnailUrl: true,
               },
@@ -439,6 +443,7 @@ function toCustomerRecentOrder(order: StoredOrderWithItems): AccountCustomerRece
         name: product.name,
         category: product.category,
         categoryMappingSource: product.categoryMappingSource,
+        categoryReviewStatus: product.categoryReviewStatus,
         sourceCategoryCodes: product.sourceCategoryCodes,
         thumbnailUrl: product.thumbnailUrl,
       })),
