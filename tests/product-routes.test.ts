@@ -516,6 +516,44 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('marks dry-run rows as updates and search-aid warnings against existing OMS products', async () => {
+    const actor = buildActor({ roles: ['OPERATIONS'] });
+    const existingProduct = buildStoredProduct({
+      id: 'KODY-PROD-000099',
+      sku: 'YP0885',
+      barcode: '8809704435086',
+    });
+    const existingMapping = buildStoredExternalMapping({
+      productId: existingProduct.id,
+      externalProductId: '6571',
+    });
+    const prisma = buildPrisma({ actor, products: [existingProduct], externalMappings: [existingMapping] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+    const contentBase64 = workbookBase64([validImwebExcelRow({ 상품번호: '6571' })]);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/dry-run',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        fileName: 'imweb-products.xlsx',
+        contentBase64,
+        sizeBytes: Buffer.byteLength(contentBase64, 'base64'),
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.summary).toMatchObject({ totalRows: 1, update: 1, create: 0 });
+    expect(body.data.items[0].status).toBe('update');
+    expect(body.data.items[0].warningCodes).toEqual(expect.arrayContaining(['EXISTING_SKU', 'EXISTING_BARCODE']));
+    expect(prisma.product.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('rejects SALES from Imweb XLSX dry-run', async () => {
     const actor = buildActor({ roles: ['SALES'] });
     const prisma = buildPrisma({ actor });
@@ -747,7 +785,8 @@ function buildStoredArtist(overrides: Partial<{ id: string; name: string }> = {}
 
 function buildStoredProduct(overrides: Partial<{
   id: string; name: string; artistId: string | null; category: ProductCategory | null; weightG: number | null;
-  labelName: string | null; releaseDateText: string | null; stockManaged: boolean; saleStatus: ProductSaleStatus;
+  labelName: string | null; releaseDateText: string | null; sku: string | null; barcode: string | null;
+  stockManaged: boolean; saleStatus: ProductSaleStatus;
   isDisplayed: boolean; categoryMappingSource: CategoryMappingSource; sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus; thumbnailUrl: string | null; detailHtml: string | null;
 }> = {}) {
@@ -766,8 +805,8 @@ function buildStoredProduct(overrides: Partial<{
     lastConfirmedPriceKRW: '15000.0000',
     lastConfirmedPriceAt: new Date('2026-05-27T00:00:00Z'),
     sourcePriceRaw: '15000',
-    sku: null,
-    barcode: null,
+    sku: overrides.sku === undefined ? null : overrides.sku,
+    barcode: overrides.barcode === undefined ? null : overrides.barcode,
     avgPurchasePriceKRW: 12000,
     stockManaged: overrides.stockManaged ?? true,
     stockOnHand: 0,
@@ -797,11 +836,27 @@ function buildStoredMovement(overrides: Partial<{
   };
 }
 
+function buildStoredExternalMapping(overrides: Partial<{
+  id: string; productId: string; sourceSystem: string; externalProductId: string; externalUrl: string | null; status: string;
+}> = {}) {
+  return {
+    id: overrides.id ?? 'mapping_1',
+    productId: overrides.productId ?? PRODUCT_ID,
+    sourceSystem: overrides.sourceSystem ?? 'IMWEB_KR',
+    externalProductId: overrides.externalProductId ?? '6571',
+    externalUrl: overrides.externalUrl === undefined ? null : overrides.externalUrl,
+    status: overrides.status ?? 'ACTIVE',
+    firstSeenAt: new Date('2026-05-27T00:00:00Z'),
+    lastSyncedAt: new Date('2026-05-27T00:00:00Z'),
+  };
+}
+
 interface PrismaInput {
   actor: ReturnType<typeof buildActor>;
   artists?: ReturnType<typeof buildStoredArtist>[];
   products?: ReturnType<typeof buildStoredProduct>[];
   movements?: ReturnType<typeof buildStoredMovement>[];
+  externalMappings?: ReturnType<typeof buildStoredExternalMapping>[];
   createdProduct?: ReturnType<typeof buildStoredProduct>;
   updatedProduct?: ReturnType<typeof buildStoredProduct>;
   createdMovement?: ReturnType<typeof buildStoredMovement>;
@@ -812,6 +867,7 @@ function buildPrisma(input: PrismaInput) {
   const artists = input.artists ?? [];
   const products = input.products ?? [];
   const movements = input.movements ?? [];
+  const externalMappings = input.externalMappings ?? [];
 
   return {
     user: {
@@ -848,7 +904,15 @@ function buildPrisma(input: PrismaInput) {
     },
     productExternalMapping: {
       findUnique: vi.fn(async () => null),
-      findMany: vi.fn(async () => []),
+      findMany: vi.fn(async (args: { where?: { productId?: string; sourceSystem?: string } }) => {
+        if (args.where?.productId) {
+          return externalMappings.filter((mapping) => mapping.productId === args.where?.productId);
+        }
+        if (args.where?.sourceSystem) {
+          return externalMappings.filter((mapping) => mapping.sourceSystem === args.where?.sourceSystem);
+        }
+        return externalMappings;
+      }),
       create: vi.fn(async () => { throw new Error('not used'); }),
       update: vi.fn(async () => { throw new Error('not used'); }),
     },

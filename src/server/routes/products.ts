@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import { ApiError, AuthorizationError, successResponse, ValidationError } from '../api/index.js';
 import type { Role } from '@/domain/shared/types.js';
 import {
-  dryRunImwebProductWorkbookUpload,
   EXCEL_UPLOAD_MAX_BYTES,
   IMWEB_EXPORT_MAX_SELECTION,
   type ProductWorkbookUploadInput,
@@ -63,7 +62,7 @@ export function registerProductRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN', 'OPERATIONS', 'FINANCE']);
       const body = parseWorkbookUploadBody(request.body);
-      const result = dryRunImwebProductWorkbookUpload(body);
+      const result = await server.services.products.dryRunImwebProductWorkbook(body);
 
       reply.status(200);
       return successResponse(result);

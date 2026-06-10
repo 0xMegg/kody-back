@@ -120,9 +120,18 @@ export function parseImwebProductWorkbook(input: ProductWorkbookUploadInput): Re
   return rows;
 }
 
-export function dryRunImwebProductWorkbookUpload(input: ProductWorkbookUploadInput): ProductImportDryRunResult {
+export interface ProductWorkbookDryRunOptions {
+  existingExternalProductIds?: ReadonlySet<string>;
+  existingSkus?: ReadonlySet<string>;
+  existingBarcodes?: ReadonlySet<string>;
+}
+
+export function dryRunImwebProductWorkbookUpload(
+  input: ProductWorkbookUploadInput,
+  options: ProductWorkbookDryRunOptions = {},
+): ProductImportDryRunResult {
   const rows = parseImwebProductWorkbook(input);
-  const dryRun = dryRunImwebProductRows(rows);
+  const dryRun = dryRunImwebProductRows(rows, options);
   return {
     file: {
       fileName: input.fileName,

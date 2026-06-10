@@ -10,8 +10,11 @@ import type { ActionLogWriter } from '@/application/shared/action-log-writer.js'
 import type { ImwebMappedProduct, ImwebProductPriceStatus, ImwebWarningIssue } from '@/application/product/imweb-product-importer.js';
 import {
   buildImwebExportWorkbook,
+  dryRunImwebProductWorkbookUpload,
   type ImwebExportWorkbookResult,
   type ImwebExportProductInput,
+  type ProductImportDryRunResult,
+  type ProductWorkbookUploadInput,
 } from '@/application/product/product-excel-workflow.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
@@ -22,6 +25,7 @@ const CATEGORY_REVIEW_STATUSES: readonly CategoryReviewStatus[] = ['PENDING', 'M
 const DEFAULT_LIST_LIMIT = 20;
 const MIN_LIST_LIMIT = 1;
 const MAX_LIST_LIMIT = 100;
+const DRY_RUN_EXISTING_PRODUCT_SCAN_LIMIT = 10000;
 
 type ProductPriceStatus = ImwebProductPriceStatus;
 
@@ -277,7 +281,7 @@ interface ProductRepository {
       where: { sourceSystem_externalProductId: { sourceSystem: string; externalProductId: string } };
     }): Promise<StoredProductExternalMapping | null>;
     findMany(args: {
-      where: { productId: string };
+      where?: { productId?: string; sourceSystem?: string };
       orderBy: Array<Record<string, 'asc' | 'desc'>>;
     }): Promise<StoredProductExternalMapping[]>;
     create(args: { data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
@@ -467,6 +471,25 @@ export class ProductService {
       items: sliced.map((product) => toProductSummary(product)),
       nextCursor,
     };
+  }
+
+  async dryRunImwebProductWorkbook(input: ProductWorkbookUploadInput): Promise<ProductImportDryRunResult> {
+    const [externalMappings, products] = await Promise.all([
+      this.repository.productExternalMapping.findMany({
+        where: { sourceSystem: 'IMWEB_KR' },
+        orderBy: [{ externalProductId: 'asc' }],
+      }),
+      this.repository.product.findMany({
+        orderBy: [{ id: 'asc' }],
+        take: DRY_RUN_EXISTING_PRODUCT_SCAN_LIMIT,
+      }),
+    ]);
+
+    return dryRunImwebProductWorkbookUpload(input, {
+      existingExternalProductIds: new Set(externalMappings.map((mapping) => mapping.externalProductId)),
+      existingSkus: new Set(products.map((product) => product.sku).filter(isPresentString)),
+      existingBarcodes: new Set(products.map((product) => product.barcode).filter(isPresentString)),
+    });
   }
 
   async exportImwebProducts(productIds: readonly string[]): Promise<ImwebExportWorkbookResult> {
@@ -983,6 +1006,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed === '' ? undefined : trimmed;
+}
+
+function isPresentString(value: string | null): value is string {
+  return typeof value === 'string' && value.trim() !== '';
 }
 
 function normalizeAllowedHttpUrl(value: unknown): string | null {
