@@ -50,7 +50,7 @@ describe('product Excel workflow', () => {
     });
 
     expect(result.summary).toEqual({ totalRows: 2, create: 2, update: 0, skip: 0, conflict: 0, fail: 0 });
-    expect(result.items[0].warningCodes).toContain('CATEGORY_FALLBACK_GOODS');
+    expect(result.items[0].warningCodes).toContain('CATEGORY_UNMAPPED');
     expect(result.items[1].warningCodes).toContain('MISSING_PRICE');
     expect(result.items[1].reviewRequired).toBe(true);
   });

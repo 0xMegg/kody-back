@@ -7,7 +7,7 @@ import type {
   StockMovementType,
 } from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
-import type { ImwebMappedProduct, ImwebProductPriceStatus, ImwebWarningIssue } from '@/application/product/imweb-product-importer.js';
+import { parseReleaseDate, type ImwebMappedProduct, type ImwebProductPriceStatus, type ImwebWarningIssue } from '@/application/product/imweb-product-importer.js';
 import {
   buildImwebExportWorkbook,
   dryRunImwebProductWorkbookUpload,
@@ -47,6 +47,23 @@ export interface ProductExternalMappingSummary {
   lastSyncedAt: Date;
 }
 
+export interface ProductOptionValueSummary {
+  id: string;
+  optionId: string;
+  value: string;
+  position: number;
+  priceDeltaKRW: number;
+  stockSnapshot: number | null;
+}
+
+export interface ProductOptionSummary {
+  id: string;
+  productId: string;
+  name: string;
+  position: number;
+  values: ProductOptionValueSummary[];
+}
+
 export interface ProductSummary {
   id: string;
   artistId: string | null;
@@ -56,7 +73,9 @@ export interface ProductSummary {
   thumbnailUrl: string | null;
   detailHtml: string | null;
   externalMappings?: ProductExternalMappingSummary[];
+  options?: ProductOptionSummary[];
   releaseDateText: string | null;
+  releaseDate: Date | null;
   weightG: number | null;
   priceKRW: string;
   priceStatus: ProductPriceStatus;
@@ -225,6 +244,7 @@ interface StoredProduct {
   thumbnailUrl: string | null;
   detailHtml: string | null;
   releaseDateText: string | null;
+  releaseDate: Date | null;
   weightG: number | null;
   priceKRW: string;
   priceStatus: ProductPriceStatus;
@@ -268,6 +288,23 @@ interface StoredProductExternalMapping {
   firstSeenAt: Date;
   lastSyncedAt: Date;
   status: string;
+}
+
+interface StoredProductOptionValue {
+  id: string;
+  optionId: string;
+  value: string;
+  position: number;
+  priceDeltaKRW: number;
+  stockSnapshot: number | null;
+}
+
+interface StoredProductOption {
+  id: string;
+  productId: string;
+  name: string;
+  position: number;
+  values: StoredProductOptionValue[];
 }
 
 interface ProductRepository {
@@ -316,6 +353,11 @@ interface ProductRepository {
   productOption: {
     deleteMany(args: { where: { productId: string } }): Promise<Record<string, unknown>>;
     create(args: { data: Record<string, unknown> }): Promise<Record<string, unknown>>;
+    findMany(args: {
+      where: { productId: string };
+      orderBy: Array<Record<string, 'asc' | 'desc'>>;
+      include: { values: { orderBy: Array<Record<string, 'asc' | 'desc'>> } };
+    }): Promise<StoredProductOption[]>;
   };
   actionLog: {
     create(args: { data: Record<string, unknown> }): Promise<unknown>;
@@ -388,6 +430,7 @@ export class ProductService {
         : input.releaseDateText === null
           ? null
           : normalizeOptionalString(input.releaseDateText) ?? null;
+    const releaseDate = releaseDateText === undefined ? undefined : parseReleaseDate(releaseDateText);
     const weightG = input.weightG === undefined ? undefined : normalizeNonNegativeInteger(input.weightG, 'weightG');
     const priceKRW = normalizeNonNegativeDecimal(input.priceKRW, 'priceKRW', 4);
     const sku = input.sku === undefined ? undefined : normalizeOptionalString(input.sku);
@@ -437,7 +480,7 @@ export class ProductService {
       name,
       ...(labelName !== undefined ? { labelName } : {}),
       ...(detailHtml !== undefined ? { detailHtml } : {}),
-      ...(releaseDateText !== undefined ? { releaseDateText } : {}),
+      ...(releaseDateText !== undefined ? { releaseDateText, releaseDate } : {}),
       ...(weightG !== undefined ? { weightG } : {}),
       priceKRW,
       priceStatus: 'CONFIRMED',
@@ -580,11 +623,18 @@ export class ProductService {
   async getProduct(productId: string): Promise<ProductSummary> {
     const id = normalizeRequiredString(productId, 'productId');
     const product = await this.findProduct(id);
-    const externalMappings = await this.repository.productExternalMapping.findMany({
-      where: { productId: id },
-      orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
-    });
-    return toProductSummary(product, externalMappings);
+    const [externalMappings, options] = await Promise.all([
+      this.repository.productExternalMapping.findMany({
+        where: { productId: id },
+        orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
+      }),
+      this.repository.productOption.findMany({
+        where: { productId: id },
+        orderBy: [{ position: 'asc' }, { id: 'asc' }],
+        include: { values: { orderBy: [{ position: 'asc' }, { id: 'asc' }] } },
+      }),
+    ]);
+    return toProductSummary(product, externalMappings, options);
   }
 
   async correctExternalMapping(input: CorrectExternalMappingInput): Promise<CorrectExternalMappingResult> {
@@ -795,10 +845,14 @@ export class ProductService {
         input.releaseDateText === null
           ? null
           : normalizeOptionalString(input.releaseDateText) ?? null;
-      if (releaseDateText !== current.releaseDateText) {
+      const releaseDate = parseReleaseDate(releaseDateText);
+      if (releaseDateText !== current.releaseDateText || !datesEqual(releaseDate, current.releaseDate)) {
         changes.releaseDateText = releaseDateText;
+        changes.releaseDate = releaseDate;
         beforeJson.releaseDateText = current.releaseDateText;
+        beforeJson.releaseDate = current.releaseDate;
         afterJson.releaseDateText = releaseDateText;
+        afterJson.releaseDate = releaseDate;
       }
     }
 
@@ -903,6 +957,10 @@ export class ProductService {
 
       const current = await this.findProduct(mapping.productId);
       const productData = toImwebProductWriteData(input.mapped, current);
+      const nextSku = productData.sku as string | null;
+      if (nextSku !== null && nextSku !== current.sku) {
+        await this.assertSkuAvailable(nextSku, current.id);
+      }
       const updated = await this.repository.product.update({
         where: { id: current.id },
         data: productData,
@@ -937,6 +995,10 @@ export class ProductService {
 
     const productId = await this.generateProductId();
     const productData = toImwebProductWriteData(input.mapped);
+    const nextSku = productData.sku as string | null;
+    if (nextSku !== null) {
+      await this.assertSkuAvailable(nextSku);
+    }
     const created = await this.repository.product.create({
       data: {
         id: productId,
@@ -1411,13 +1473,16 @@ function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredPro
   const thumbnailUrl = normalizeOptionalString(mapped.thumbnailUrl);
   const detailHtml = normalizeOptionalString(mapped.detailHtml);
   const releaseDateText = normalizeOptionalString(mapped.releaseDateText) ?? null;
+  const releaseDate = mapped.releaseDate ?? parseReleaseDate(releaseDateText);
   return {
     category: mapped.category,
     categoryMappingSource: mapped.categoryMappingSource,
     sourceCategoryCodes: mapped.rawCategoryIds,
+    categoryReviewStatus: mapped.category === null ? 'NEEDS_REVIEW' : 'MAPPED',
     name: mapped.name,
     labelName: normalizeOptionalString(mapped.artistName) ?? null,
     releaseDateText,
+    releaseDate,
     ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
     ...(detailHtml !== undefined ? { detailHtml } : {}),
     weightG: mapped.weightG,
@@ -1514,6 +1579,7 @@ function toArtistSummary(artist: StoredArtist): ArtistSummary {
 function toProductSummary(
   product: StoredProduct,
   externalMappings?: readonly StoredProductExternalMapping[],
+  options?: readonly StoredProductOption[],
 ): ProductSummary {
   return {
     id: product.id,
@@ -1524,7 +1590,9 @@ function toProductSummary(
     thumbnailUrl: product.thumbnailUrl,
     detailHtml: product.detailHtml,
     ...(externalMappings !== undefined ? { externalMappings: externalMappings.map(toExternalMappingSummary) } : {}),
+    ...(options !== undefined ? { options: options.map(toProductOptionSummary) } : {}),
     releaseDateText: product.releaseDateText,
+    releaseDate: product.releaseDate,
     weightG: product.weightG,
     priceKRW: decimalToString(product.priceKRW, 4),
     priceStatus: product.priceStatus,
@@ -1546,6 +1614,29 @@ function toProductSummary(
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
   };
+}
+
+
+function toProductOptionSummary(option: StoredProductOption): ProductOptionSummary {
+  return {
+    id: option.id,
+    productId: option.productId,
+    name: option.name,
+    position: option.position,
+    values: option.values.map((value) => ({
+      id: value.id,
+      optionId: value.optionId,
+      value: value.value,
+      position: value.position,
+      priceDeltaKRW: value.priceDeltaKRW,
+      stockSnapshot: value.stockSnapshot,
+    })),
+  };
+}
+
+function datesEqual(left: Date | null, right: Date | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.getTime() === right.getTime();
 }
 
 function toExternalMappingSummary(mapping: StoredProductExternalMapping): ProductExternalMappingSummary {
@@ -1602,6 +1693,7 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
     thumbnailUrl: product.thumbnailUrl,
     detailHtml: product.detailHtml,
     releaseDateText: product.releaseDateText,
+    releaseDate: product.releaseDate,
     weightG: product.weightG,
     priceKRW: decimalToString(product.priceKRW, 4),
     priceStatus: product.priceStatus,

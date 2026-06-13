@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   dryRunImwebProductRows,
   parseImwebProductRow,
+  parseReleaseDate,
 } from '@/application/product/imweb-product-importer.js';
 
 function validRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -40,6 +41,20 @@ function validRow(overrides: Record<string, unknown> = {}): Record<string, unkno
 }
 
 describe('Imweb product dry-run importer', () => {
+
+  it('parses releaseDateText only for whitelisted safe date formats', () => {
+    expect(parseReleaseDate('2026-04-30')?.toISOString()).toBe('2026-04-30T00:00:00.000Z');
+    expect(parseReleaseDate('2026.04.30')?.toISOString()).toBe('2026-04-30T00:00:00.000Z');
+    expect(parseReleaseDate('2026/04/30')?.toISOString()).toBe('2026-04-30T00:00:00.000Z');
+    expect(parseReleaseDate('2026년 4월 30일')?.toISOString()).toBe('2026-04-30T00:00:00.000Z');
+    expect(parseReleaseDate('2026-04')?.toISOString()).toBe('2026-04-01T00:00:00.000Z');
+    expect(parseReleaseDate('2026.04')?.toISOString()).toBe('2026-04-01T00:00:00.000Z');
+    expect(parseReleaseDate('2026')?.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    expect(parseReleaseDate('2026-02-30')).toBeNull();
+    expect(parseReleaseDate('2026년 봄')).toBeNull();
+    expect(parseReleaseDate('S/S 24')).toBeNull();
+  });
+
   it('maps a real Imweb export row to KODY Product dry-run fields without DB writes', () => {
     const result = parseImwebProductRow(validRow(), 2);
 
@@ -59,6 +74,7 @@ describe('Imweb product dry-run importer', () => {
       optionName: 'VERSION',
       optionValues: ['MUSIC PLANET', 'KTOWN4U'],
       releaseDateText: '2026-04-30',
+      releaseDate: new Date('2026-04-30T00:00:00.000Z'),
     });
     expect(result.mapped?.rawCategoryIds).toEqual(['CATE70', 'CATE65']);
   });
@@ -116,7 +132,7 @@ describe('Imweb product dry-run importer', () => {
 
 
 
-  it('persists category fallback provenance as a structured warning without failing the row', () => {
+  it('persists unmapped category provenance as review-required debt without failing the row', () => {
     const result = parseImwebProductRow(validRow({ 카테고리ID: 'CATE999' }), 42);
 
     expect(result.status).toBe('create');
@@ -127,10 +143,10 @@ describe('Imweb product dry-run importer', () => {
       categoryMappingSource: 'FALLBACK',
     });
     expect(result.warnings).toContainEqual(expect.objectContaining({
-      code: 'CATEGORY_FALLBACK_GOODS',
-      severity: 'WARN',
+      code: 'CATEGORY_UNMAPPED',
+      severity: 'REVIEW',
       domain: 'CATEGORY',
-      scope: 'SOURCE_DEVIATION',
+      scope: 'KODY_REVIEW_REQUIRED',
       field: '카테고리ID',
     }));
   });

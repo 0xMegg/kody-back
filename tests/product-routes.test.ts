@@ -753,7 +753,7 @@ describe('product routes', () => {
     expect(response.statusCode).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.data.summary.totalRows).toBe(1);
-    expect(body.data.items[0].warningCodes).toEqual(expect.arrayContaining(['CATEGORY_FALLBACK_GOODS', 'MISSING_PRICE']));
+    expect(body.data.items[0].warningCodes).toEqual(expect.arrayContaining(['CATEGORY_UNMAPPED', 'MISSING_PRICE']));
     expect(body.data.items[0].reviewRequired).toBe(true);
     expect(prisma.product.create).not.toHaveBeenCalled();
 
@@ -1114,7 +1114,7 @@ function buildStoredArtist(overrides: Partial<{ id: string; name: string }> = {}
 
 function buildStoredProduct(overrides: Partial<{
   id: string; name: string; artistId: string | null; category: ProductCategory | null; weightG: number | null;
-  labelName: string | null; releaseDateText: string | null; sku: string | null; barcode: string | null;
+  labelName: string | null; releaseDateText: string | null; releaseDate: Date | null; sku: string | null; barcode: string | null;
   stockOnHand: number; orderBasedStock: number; shipmentBasedStock: number;
   stockManaged: boolean; saleStatus: ProductSaleStatus;
   isDisplayed: boolean; categoryMappingSource: CategoryMappingSource; sourceCategoryCodes: string[];
@@ -1129,6 +1129,7 @@ function buildStoredProduct(overrides: Partial<{
     thumbnailUrl: overrides.thumbnailUrl === undefined ? null : overrides.thumbnailUrl,
     detailHtml: overrides.detailHtml === undefined ? null : overrides.detailHtml,
     releaseDateText: overrides.releaseDateText === undefined ? null : overrides.releaseDateText,
+    releaseDate: overrides.releaseDate === undefined ? null : overrides.releaseDate,
     weightG: overrides.weightG === undefined ? 150 : overrides.weightG,
     priceKRW: '15000.0000',
     priceStatus: 'CONFIRMED' as const,
@@ -1183,12 +1184,29 @@ function buildStoredExternalMapping(overrides: Partial<{
   };
 }
 
+function buildStoredProductOption(overrides: Partial<{
+  id: string; productId: string; name: string; position: number; values: Array<{ id: string; optionId: string; value: string; position: number; priceDeltaKRW: number; stockSnapshot: number | null }>;
+}> = {}) {
+  const id = overrides.id ?? 'option_1';
+  return {
+    id,
+    productId: overrides.productId ?? PRODUCT_ID,
+    name: overrides.name ?? 'VERSION',
+    position: overrides.position ?? 0,
+    values: overrides.values ?? [
+      { id: 'option_value_1', optionId: id, value: 'MUSIC PLANET', position: 0, priceDeltaKRW: 0, stockSnapshot: null },
+      { id: 'option_value_2', optionId: id, value: 'KTOWN4U', position: 1, priceDeltaKRW: 0, stockSnapshot: null },
+    ],
+  };
+}
+
 interface PrismaInput {
   actor: ReturnType<typeof buildActor>;
   artists?: ReturnType<typeof buildStoredArtist>[];
   products?: ReturnType<typeof buildStoredProduct>[];
   movements?: ReturnType<typeof buildStoredMovement>[];
   externalMappings?: ReturnType<typeof buildStoredExternalMapping>[];
+  productOptions?: ReturnType<typeof buildStoredProductOption>[];
   createdProduct?: ReturnType<typeof buildStoredProduct>;
   updatedProduct?: ReturnType<typeof buildStoredProduct>;
   createdMovement?: ReturnType<typeof buildStoredMovement>;
@@ -1200,6 +1218,7 @@ function buildPrisma(input: PrismaInput) {
   const products = input.products ?? [];
   const movements = input.movements ?? [];
   const externalMappings = input.externalMappings ?? [];
+  const productOptions = input.productOptions ?? [];
 
   const prisma = {
     user: {
@@ -1259,6 +1278,11 @@ function buildPrisma(input: PrismaInput) {
       }),
       create: vi.fn(async () => { throw new Error('not used'); }),
       update: vi.fn(async () => { throw new Error('not used'); }),
+    },
+    productOption: {
+      deleteMany: vi.fn(async () => ({})),
+      create: vi.fn(async () => ({})),
+      findMany: vi.fn(async (args: { where: { productId: string } }) => productOptions.filter((option) => option.productId === args.where.productId)),
     },
     stockMovement: {
       create: vi.fn(async () => {

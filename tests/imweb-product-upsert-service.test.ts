@@ -20,7 +20,7 @@ describe('ProductService Imweb import upsert contract', () => {
 
     expect(result.status).toBe('create');
     expect(result.product.id).toBe('KODY-PROD-000001');
-    expect(repo.product.findFirst).not.toHaveBeenCalled();
+    expect(repo.product.findFirst).toHaveBeenCalledWith({ where: { sku: 'YP0885' } });
     expect(repo.product.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: 'KODY-PROD-000001',
@@ -30,6 +30,7 @@ describe('ProductService Imweb import upsert contract', () => {
         name: 'ILLIT Album',
         labelName: 'BELIFT LAB',
         releaseDateText: '2026-04-30',
+        releaseDate: new Date('2026-04-30T00:00:00.000Z'),
         priceKRW: '17440.0000',
         weightG: 1,
         sku: 'YP0885',
@@ -37,6 +38,7 @@ describe('ProductService Imweb import upsert contract', () => {
         stockOnHand: 14,
         saleStatus: 'ON_SALE',
         isDisplayed: true,
+        categoryReviewStatus: 'MAPPED',
       }),
     });
     expect(repo.productExternalMapping.create).toHaveBeenCalledWith({
@@ -55,7 +57,7 @@ describe('ProductService Imweb import upsert contract', () => {
 
 
 
-  it('stores category fallback provenance on Product without treating it as an identity conflict', async () => {
+  it('stores unmapped category provenance and marks the Product as needing review', async () => {
     const repo = buildRepository();
     const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
 
@@ -77,8 +79,53 @@ describe('ProductService Imweb import upsert contract', () => {
         category: null,
         categoryMappingSource: 'FALLBACK',
         sourceCategoryCodes: ['CATE999'],
+        categoryReviewStatus: 'NEEDS_REVIEW',
       }),
     });
+  });
+
+
+  it('rejects duplicate SKU on Imweb create import even though the database has no unique constraint', async () => {
+    const repo = buildRepository({ existingSkuProduct: storedProduct({ id: 'KODY-PROD-EXISTING', sku: 'YP0885' }) });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await expect(
+      service.upsertImwebProduct({
+        actorUserId: 'admin_1',
+        importBatchId: 'batch_duplicate_sku_create',
+        rawHash: 'hash-duplicate-sku-create',
+        mapped: mappedProduct({ externalProductId: '7777', sku: 'YP0885' }),
+      }),
+    ).rejects.toMatchObject({ code: 'DUPLICATE_SKU', statusCode: 409 });
+
+    expect(repo.product.create).not.toHaveBeenCalled();
+    expect(repo.productExternalMapping.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate SKU on Imweb update when the SKU belongs to another Product', async () => {
+    const repo = buildRepository({
+      existingMapping: {
+        id: 'map_6571',
+        productId: 'KODY-PROD-000123',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+      existingProduct: storedProduct({ id: 'KODY-PROD-000123', sku: 'OLD-SKU' }),
+      existingSkuProduct: storedProduct({ id: 'KODY-PROD-OTHER', sku: 'YP0885' }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await expect(
+      service.upsertImwebProduct({
+        actorUserId: 'admin_1',
+        importBatchId: 'batch_duplicate_sku_update',
+        rawHash: 'hash-duplicate-sku-update',
+        mapped: mappedProduct({ externalProductId: '6571', sku: 'YP0885' }),
+      }),
+    ).rejects.toMatchObject({ code: 'DUPLICATE_SKU', statusCode: 409 });
+
+    expect(repo.product.update).not.toHaveBeenCalled();
+    expect(repo.productExternalMapping.update).not.toHaveBeenCalled();
   });
 
   it('stores parsed Imweb required option values on ProductOption for import display', async () => {
@@ -124,13 +171,13 @@ describe('ProductService Imweb import upsert contract', () => {
         rawPayload: { '상품번호': '6219', '카테고리ID': 'CATE5', '판매가': '0' },
         warnings: [
           {
-            code: 'CATEGORY_FALLBACK_GOODS',
-            severity: 'WARN',
+            code: 'CATEGORY_UNMAPPED',
+            severity: 'REVIEW',
             domain: 'CATEGORY',
-            scope: 'SOURCE_DEVIATION',
+            scope: 'KODY_REVIEW_REQUIRED',
             field: '카테고리ID',
-            message: 'KODY 상품 카테고리로 명확히 매핑되지 않아 GOODS로 dry-run 처리합니다.',
-            context: { rawCategoryIds: ['CATE5'], assignedCategory: 'GOODS' },
+            message: 'KODY 상품 카테고리로 명확히 매핑되지 않아 category=null 검수 대상으로 dry-run 처리합니다.',
+            context: { rawCategoryIds: ['CATE5'], assignedCategory: null },
           },
           {
             code: 'ZERO_PRICE',
@@ -166,7 +213,7 @@ describe('ProductService Imweb import upsert contract', () => {
         sourcePriceRaw: '0',
         parsedPriceKRW: '0.0000',
         assignedPriceStatus: 'ZERO_NEEDS_REVIEW',
-        warningCodes: ['CATEGORY_FALLBACK_GOODS', 'ZERO_PRICE'],
+        warningCodes: ['CATEGORY_UNMAPPED', 'ZERO_PRICE'],
         reviewRequired: true,
         productId: 'KODY-PROD-000001',
         mappingId: 'map_new',
@@ -358,6 +405,7 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
     optionName: 'VERSION',
     optionValues: ['MUSIC PLANET', 'KTOWN4U'],
     releaseDateText: '2026-04-30',
+    releaseDate: new Date('2026-04-30T00:00:00.000Z'),
     rawCategoryIds: ['CATE70', 'CATE65'],
     saleStatus: '판매중',
     displayStatus: true,
@@ -387,6 +435,7 @@ function baseStoredProduct() {
     thumbnailUrl: null,
     detailHtml: null,
     releaseDateText: null,
+    releaseDate: null,
     weightG: 1,
     priceKRW: '17440.0000',
     priceStatus: 'CONFIRMED' as const,
@@ -413,6 +462,7 @@ function baseStoredProduct() {
 function buildRepository(input: {
   existingMapping?: { id: string; productId: string; sourceSystem: string; externalProductId: string; status?: string } | null;
   existingProduct?: ReturnType<typeof storedProduct> | null;
+  existingSkuProduct?: ReturnType<typeof storedProduct> | null;
 } = {}) {
   const createdProduct = storedProduct();
   const updatedProduct = input.existingProduct
@@ -431,7 +481,10 @@ function buildRepository(input: {
         if (args.where.id === input.existingProduct?.id) return input.existingProduct;
         return null;
       }),
-      findFirst: vi.fn(async () => { throw new Error('SKU/barcode uniqueness must not gate Imweb import upsert'); }),
+      findFirst: vi.fn(async (args: { where: { sku?: string } }) => {
+        if (args.where.sku && input.existingSkuProduct?.sku === args.where.sku) return input.existingSkuProduct;
+        return null;
+      }),
       findMany: vi.fn(async () => []),
       update: vi.fn(async () => updatedProduct),
     },
@@ -443,9 +496,11 @@ function buildRepository(input: {
     productOption: {
       deleteMany: vi.fn(async () => ({})),
       create: vi.fn(async () => ({})),
+      findMany: vi.fn(async () => []),
     },
     importRow: {
       create: vi.fn(async () => ({})),
+      findMany: vi.fn(async () => []),
     },
     productSequence: {
       upsert: vi.fn(async () => ({ key: 'KODY-PROD', lastSeq: 1 })),

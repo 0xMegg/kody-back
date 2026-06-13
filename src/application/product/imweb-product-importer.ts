@@ -5,7 +5,7 @@ export type ImwebConflictReason = 'existing' | 'duplicate_in_file';
 export type ImwebProductPriceStatus = 'CONFIRMED' | 'MISSING' | 'ZERO_NEEDS_REVIEW' | 'STALE_NEEDS_RECONFIRM';
 export type ImwebCategoryMappingSource = 'EXACT' | 'FALLBACK' | 'MANUAL';
 export type ImwebWarningCode =
-  | 'CATEGORY_FALLBACK_GOODS'
+  | 'CATEGORY_UNMAPPED'
   | 'DUPLICATE_BARCODE_IN_FILE'
   | 'DUPLICATE_SKU_IN_FILE'
   | 'EXISTING_BARCODE'
@@ -45,6 +45,7 @@ export interface ImwebMappedProduct {
   category: ProductCategory | null;
   artistName: string;
   releaseDateText: string | null;
+  releaseDate: Date | null;
   priceKRW: string;
   priceStatus: ImwebProductPriceStatus;
   sourcePriceRaw: string | null;
@@ -111,6 +112,7 @@ export function parseImwebProductRow(
   );
   const artistName = readOptionalString(row, '브랜드') ?? 'UNKNOWN';
   const releaseDateText = readOptionalString(row, '제조사');
+  const releaseDate = parseReleaseDate(releaseDateText);
   const inventoryEnabled = parseYn(row, '재고사용', false, warnings);
   const stockOnHand = inventoryEnabled
     ? readNonNegativeInteger(row, '현재 재고수량', errors, { defaultValue: 0 })
@@ -139,6 +141,7 @@ export function parseImwebProductRow(
       category,
       artistName,
       releaseDateText,
+      releaseDate,
       priceKRW: price!.priceKRW,
       priceStatus: price!.priceStatus,
       sourcePriceRaw: price!.sourcePriceRaw,
@@ -161,6 +164,42 @@ export function parseImwebProductRow(
     warnings,
     conflicts: [],
   };
+}
+
+
+export function parseReleaseDate(value: string | null): Date | null {
+  if (!value) return null;
+  const text = value.trim();
+  let year: number;
+  let month = 1;
+  let day = 1;
+
+  const full = text.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/);
+  const korean = text.match(/^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일$/);
+  const monthOnly = text.match(/^(\d{4})[-.](\d{1,2})$/);
+  const yearOnly = text.match(/^(\d{4})$/);
+
+  if (full) {
+    year = Number(full[1]);
+    month = Number(full[2]);
+    day = Number(full[3]);
+  } else if (korean) {
+    year = Number(korean[1]);
+    month = Number(korean[2]);
+    day = Number(korean[3]);
+  } else if (monthOnly) {
+    year = Number(monthOnly[1]);
+    month = Number(monthOnly[2]);
+  } else if (yearOnly) {
+    year = Number(yearOnly[1]);
+  } else {
+    return null;
+  }
+
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return date;
 }
 
 export function dryRunImwebProductRows(
@@ -382,10 +421,10 @@ function mapProductCategory(
     if (pattern.test(joined)) return { category, source: 'EXACT' };
   }
   warnings.push(makeWarning(
-    'CATEGORY_FALLBACK_GOODS',
-    'WARN',
+    'CATEGORY_UNMAPPED',
+    'REVIEW',
     'CATEGORY',
-    'SOURCE_DEVIATION',
+    'KODY_REVIEW_REQUIRED',
     '카테고리ID',
     'KODY 상품 카테고리로 명확히 매핑되지 않아 category=null 검수 대상으로 dry-run 처리합니다.',
     { rawCategoryIds: categoryIds, assignedCategory: null },
