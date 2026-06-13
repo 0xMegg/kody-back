@@ -124,7 +124,7 @@ describe('order routes', () => {
     await server.close();
   });
 
-  it('confirms a PENDING order, increments orderBasedStock transactionally, and logs ORDER_CONFIRM', async () => {
+  it('confirms a PENDING order, decrements orderBasedStock transactionally, and logs ORDER_CONFIRM', async () => {
     const actor = buildActor({ roles: ['OPERATIONS'] });
     const prisma = buildPrisma({ actor, orders: [buildStoredOrder({ status: 'PENDING' })] });
     const server = buildTestServer(prisma);
@@ -140,7 +140,7 @@ describe('order routes', () => {
     expect(response.json().data.status).toBe('CONFIRMED');
     expect(prisma.product.update).toHaveBeenCalledWith({
       where: { id: PRODUCT_ID },
-      data: { orderBasedStock: { increment: 2 } },
+      data: { orderBasedStock: { decrement: 2 } },
     });
     expect(prisma.actionLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ actionType: 'ORDER_CONFIRM', targetId: ORDER_ID }),
@@ -165,7 +165,7 @@ describe('order routes', () => {
     await server.close();
   });
 
-  it('suspends a CONFIRMED order, decrements orderBasedStock transactionally, and logs ORDER_CANCEL', async () => {
+  it('suspends a CONFIRMED order, increments orderBasedStock transactionally, and logs ORDER_CANCEL', async () => {
     const actor = buildActor({ roles: ['SALES'] });
     const prisma = buildPrisma({ actor, orders: [buildStoredOrder({ status: 'CONFIRMED' })] });
     const server = buildTestServer(prisma);
@@ -181,7 +181,7 @@ describe('order routes', () => {
     expect(response.json().data.status).toBe('SUSPENDED');
     expect(prisma.product.update).toHaveBeenCalledWith({
       where: { id: PRODUCT_ID },
-      data: { orderBasedStock: { decrement: 2 } },
+      data: { orderBasedStock: { increment: 2 } },
     });
     expect(prisma.actionLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ actionType: 'ORDER_CANCEL', targetId: ORDER_ID }),

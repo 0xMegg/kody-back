@@ -259,7 +259,7 @@ export class OrderService {
       for (const item of current.items ?? []) {
         await tx.product.update({
           where: { id: item.productId },
-          data: { orderBasedStock: { increment: item.quantity } },
+          data: { orderBasedStock: { decrement: item.quantity } },
         });
       }
       return current;
@@ -290,7 +290,7 @@ export class OrderService {
         for (const item of current.items ?? []) {
           await tx.product.update({
             where: { id: item.productId },
-            data: { orderBasedStock: { decrement: item.quantity } },
+            data: { orderBasedStock: { increment: item.quantity } },
           });
         }
         return current;
