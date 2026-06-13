@@ -29,6 +29,7 @@ describe('ProductService Imweb import upsert contract', () => {
         sourceCategoryCodes: ['CATE70', 'CATE65'],
         name: 'ILLIT Album',
         labelName: 'BELIFT LAB',
+        releaseDateText: '2026-04-30',
         priceKRW: '17440.0000',
         weightG: 1,
         sku: 'YP0885',
@@ -64,7 +65,7 @@ describe('ProductService Imweb import upsert contract', () => {
       rawHash: 'hash-fallback-category',
       mapped: mappedProduct({
         externalProductId: '9999',
-        category: 'GOODS',
+        category: null,
         rawCategoryIds: ['CATE999'],
         categoryMappingSource: 'FALLBACK',
       }),
@@ -73,13 +74,42 @@ describe('ProductService Imweb import upsert contract', () => {
     expect(result.status).toBe('create');
     expect(repo.product.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        category: 'GOODS',
+        category: null,
         categoryMappingSource: 'FALLBACK',
         sourceCategoryCodes: ['CATE999'],
       }),
     });
   });
 
+  it('stores parsed Imweb required option values on ProductOption for import display', async () => {
+    const repo = buildRepository();
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_options',
+      rawHash: 'hash-options',
+      mapped: mappedProduct({
+        optionName: 'VERSION',
+        optionValues: ['MUSIC PLANET', 'KTOWN4U'],
+      }),
+    });
+
+    expect(repo.productOption.deleteMany).toHaveBeenCalledWith({ where: { productId: 'KODY-PROD-000001' } });
+    expect(repo.productOption.create).toHaveBeenCalledWith({
+      data: {
+        productId: 'KODY-PROD-000001',
+        name: 'VERSION',
+        position: 0,
+        values: {
+          create: [
+            { value: 'MUSIC PLANET', position: 0, priceDeltaKRW: 0 },
+            { value: 'KTOWN4U', position: 1, priceDeltaKRW: 0 },
+          ],
+        },
+      },
+    });
+  });
 
   it('persists structured warning evidence on ImportRow when a write import row is provided', async () => {
     const repo = buildRepository();
@@ -115,7 +145,7 @@ describe('ProductService Imweb import upsert contract', () => {
       },
       mapped: mappedProduct({
         externalProductId: '6219',
-        category: 'GOODS',
+        category: null,
         rawCategoryIds: ['CATE5'],
         categoryMappingSource: 'FALLBACK',
         priceKRW: '0.0000',
@@ -185,6 +215,33 @@ describe('ProductService Imweb import upsert contract', () => {
         status: 'ACTIVE',
       }),
     });
+  });
+
+  it('does not update a detached ORPHANED mapping on re-import', async () => {
+    const repo = buildRepository({
+      existingMapping: {
+        id: 'map_orphaned',
+        productId: 'KODY-PROD-WRONG',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+        status: 'ORPHANED',
+      },
+      existingProduct: storedProduct({ id: 'KODY-PROD-WRONG', name: 'Wrong Product' }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await expect(
+      service.upsertImwebProduct({
+        actorUserId: 'admin_1',
+        importBatchId: 'batch_orphaned',
+        rawHash: 'hash-orphaned',
+        mapped: mappedProduct({ externalProductId: '6571', name: 'Correct Source Product' }),
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_MAPPING_ORPHANED', statusCode: 409 });
+
+    expect(repo.product.update).not.toHaveBeenCalled();
+    expect(repo.productExternalMapping.update).not.toHaveBeenCalled();
+    expect(repo.product.create).not.toHaveBeenCalled();
   });
 
   it('drops unsafe Imweb external URLs instead of persisting executable link schemes', async () => {
@@ -300,6 +357,7 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
     avgPurchasePriceKRW: 0,
     optionName: 'VERSION',
     optionValues: ['MUSIC PLANET', 'KTOWN4U'],
+    releaseDateText: '2026-04-30',
     rawCategoryIds: ['CATE70', 'CATE65'],
     saleStatus: '판매중',
     displayStatus: true,
@@ -310,7 +368,12 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
   };
 }
 
-function storedProduct(overrides: Partial<ReturnType<typeof baseStoredProduct>> = {}) {
+function storedProduct(
+  overrides: Partial<ReturnType<typeof baseStoredProduct>> & {
+    thumbnailUrl?: string | null;
+    detailHtml?: string | null;
+  } = {},
+) {
   return { ...baseStoredProduct(), ...overrides };
 }
 
@@ -348,7 +411,7 @@ function baseStoredProduct() {
 }
 
 function buildRepository(input: {
-  existingMapping?: { id: string; productId: string; sourceSystem: string; externalProductId: string } | null;
+  existingMapping?: { id: string; productId: string; sourceSystem: string; externalProductId: string; status?: string } | null;
   existingProduct?: ReturnType<typeof storedProduct> | null;
 } = {}) {
   const createdProduct = storedProduct();
@@ -376,6 +439,10 @@ function buildRepository(input: {
       findUnique: vi.fn(async () => input.existingMapping ?? null),
       create: vi.fn(async () => ({ id: 'map_new', productId: createdProduct.id })),
       update: vi.fn(async () => input.existingMapping ?? { id: 'map_new', productId: createdProduct.id }),
+    },
+    productOption: {
+      deleteMany: vi.fn(async () => ({})),
+      create: vi.fn(async () => ({})),
     },
     importRow: {
       create: vi.fn(async () => ({})),

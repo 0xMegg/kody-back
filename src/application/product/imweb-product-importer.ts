@@ -34,7 +34,7 @@ export interface ImwebWarningIssue extends ImwebValidationIssue {
 }
 
 export interface ImwebConflict {
-  field: 'externalProductId';
+  field: 'externalProductId' | 'sku';
   value: string;
   reason: ImwebConflictReason;
 }
@@ -42,8 +42,9 @@ export interface ImwebConflict {
 export interface ImwebMappedProduct {
   externalProductId: string;
   name: string;
-  category: ProductCategory;
+  category: ProductCategory | null;
   artistName: string;
+  releaseDateText: string | null;
   priceKRW: string;
   priceStatus: ImwebProductPriceStatus;
   sourcePriceRaw: string | null;
@@ -73,8 +74,8 @@ export interface ImwebDryRunItem {
 }
 
 export interface DryRunImwebProductRowsOptions {
-  existingExternalProductIds?: ReadonlySet<string>;
-  existingSkus?: ReadonlySet<string>;
+  existingExternalProductIds?: ReadonlyMap<string, string>;
+  existingSkus?: ReadonlyMap<string, string>;
   existingBarcodes?: ReadonlySet<string>;
 }
 
@@ -109,6 +110,7 @@ export function parseImwebProductRow(
     warnings,
   );
   const artistName = readOptionalString(row, '브랜드') ?? 'UNKNOWN';
+  const releaseDateText = readOptionalString(row, '제조사');
   const inventoryEnabled = parseYn(row, '재고사용', false, warnings);
   const stockOnHand = inventoryEnabled
     ? readNonNegativeInteger(row, '현재 재고수량', errors, { defaultValue: 0 })
@@ -136,6 +138,7 @@ export function parseImwebProductRow(
       name: name!,
       category,
       artistName,
+      releaseDateText,
       priceKRW: price!.priceKRW,
       priceStatus: price!.priceStatus,
       sourcePriceRaw: price!.sourcePriceRaw,
@@ -179,10 +182,20 @@ export function dryRunImwebProductRows(
       item.mapped.externalProductId,
       seenExternalProductIds,
     );
-    appendSearchAidWarning(item.warnings, 'sku', item.mapped.sku, seenSkus, options.existingSkus);
-    appendSearchAidWarning(
+
+    const matchedProductId =
+      options.existingExternalProductIds?.get(item.mapped.externalProductId) ?? null;
+
+    appendSkuChecks(
       item.warnings,
-      'barcode',
+      conflicts,
+      item.mapped.sku,
+      seenSkus,
+      options.existingSkus,
+      matchedProductId,
+    );
+    appendBarcodeWarnings(
+      item.warnings,
       item.mapped.barcode,
       seenBarcodes,
       options.existingBarcodes,
@@ -363,7 +376,7 @@ function parseCategoryIds(value: string | null): string[] {
 function mapProductCategory(
   categoryIds: readonly string[],
   warnings: ImwebWarningIssue[],
-): { category: ProductCategory; source: ImwebCategoryMappingSource } {
+): { category: ProductCategory | null; source: ImwebCategoryMappingSource } {
   const joined = categoryIds.join(',');
   for (const [pattern, category] of CATEGORY_BY_IMWEB_CATEGORY_ID_PREFIX) {
     if (pattern.test(joined)) return { category, source: 'EXACT' };
@@ -374,10 +387,10 @@ function mapProductCategory(
     'CATEGORY',
     'SOURCE_DEVIATION',
     '카테고리ID',
-    'KODY 상품 카테고리로 명확히 매핑되지 않아 GOODS로 dry-run 처리합니다.',
-    { rawCategoryIds: categoryIds, assignedCategory: 'GOODS' },
+    'KODY 상품 카테고리로 명확히 매핑되지 않아 category=null 검수 대상으로 dry-run 처리합니다.',
+    { rawCategoryIds: categoryIds, assignedCategory: null },
   ));
-  return { category: 'GOODS', source: 'FALLBACK' };
+  return { category: null, source: 'FALLBACK' };
 }
 
 function normalizeBarcode(
@@ -431,33 +444,72 @@ function appendExternalProductIdConflict(
   }
 }
 
-function appendSearchAidWarning(
+function appendSkuChecks(
   warnings: ImwebWarningIssue[],
-  field: 'sku' | 'barcode',
+  conflicts: ImwebConflict[],
   value: string | null,
-  seen: ReadonlySet<string>,
-  existing?: ReadonlySet<string>,
+  seenInFile: ReadonlySet<string>,
+  existing: ReadonlyMap<string, string> | undefined,
+  matchedProductId: string | null,
+): void {
+  if (!value) return;
+  const existingOwnerProductId = existing?.get(value);
+  if (existingOwnerProductId) {
+    warnings.push(makeWarning(
+      'EXISTING_SKU',
+      'WARN',
+      'SKU',
+      'SOURCE_DEVIATION',
+      'sku',
+      existingOwnerProductId === matchedProductId
+        ? '이미 존재하는 SKU입니다. 검색 보조값으로만 유지합니다.'
+        : '이미 존재하는 SKU입니다. SKU는 고유해야 합니다.',
+      { value, ownerProductId: existingOwnerProductId },
+    ));
+    if (existingOwnerProductId !== matchedProductId) {
+      conflicts.push({ field: 'sku', value, reason: 'existing' });
+    }
+  }
+  if (seenInFile.has(value)) {
+    warnings.push(makeWarning(
+      'DUPLICATE_SKU_IN_FILE',
+      'WARN',
+      'SKU',
+      'SOURCE_DEVIATION',
+      'sku',
+      '파일 안에서 중복된 SKU입니다. SKU는 고유해야 합니다.',
+      { value },
+    ));
+    conflicts.push({ field: 'sku', value, reason: 'duplicate_in_file' });
+  }
+}
+
+function appendBarcodeWarnings(
+  warnings: ImwebWarningIssue[],
+  value: string | null,
+  seenInFile: ReadonlySet<string>,
+  existing: ReadonlySet<string> | undefined,
 ): void {
   if (!value) return;
   if (existing?.has(value)) {
     warnings.push(makeWarning(
-      field === 'sku' ? 'EXISTING_SKU' : 'EXISTING_BARCODE',
+      'EXISTING_BARCODE',
       'WARN',
-      field === 'sku' ? 'SKU' : 'BARCODE',
+      'BARCODE',
       'SOURCE_DEVIATION',
-      field,
-      `이미 존재하는 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
+      'barcode',
+      '이미 존재하는 바코드입니다. 검색 보조값으로만 유지합니다.',
       { value },
     ));
   }
-  if (seen.has(value)) {
+  if (seenInFile.has(value)) {
     warnings.push(makeWarning(
-      field === 'sku' ? 'DUPLICATE_SKU_IN_FILE' : 'DUPLICATE_BARCODE_IN_FILE',
+      'DUPLICATE_BARCODE_IN_FILE',
       'WARN',
-      field === 'sku' ? 'SKU' : 'BARCODE',
+      'BARCODE',
       'SOURCE_DEVIATION',
-      field,
-      `파일 안에서 중복된 ${field === 'sku' ? 'SKU' : '바코드'}입니다. 검색 보조값으로만 유지합니다.`,
+      'barcode',
+      '파일 안에서 중복된 바코드입니다. 검색 보조값으로만 유지합니다.',
       { value },
     ));
   }

@@ -38,6 +38,7 @@ export interface ArtistSummary {
 
 export interface ProductExternalMappingSummary {
   id: string;
+  productId: string;
   sourceSystem: string;
   externalProductId: string;
   externalUrl: string | null;
@@ -83,6 +84,8 @@ export interface StockMovementSummary {
   productId: string;
   type: StockMovementType;
   quantity: number;
+  previousQty: number | null;
+  newQty: number | null;
   reason: string | null;
   createdById: string | null;
   createdAt: Date;
@@ -99,12 +102,14 @@ export interface CreateProductInput {
   category?: ProductCategory;
   name: string;
   labelName?: string | null;
+  detailHtml?: string | null;
   releaseDateText?: string | null;
   weightG?: number;
   priceKRW: string | number;
   sku?: string;
   barcode?: string;
   avgPurchasePriceKRW?: number;
+  initialStockOnHand?: number;
   stockManaged?: boolean;
   saleStatus?: ProductSaleStatus;
   isDisplayed?: boolean;
@@ -135,6 +140,7 @@ export interface UpdateProductInput {
   category?: ProductCategory | null;
   name?: string;
   labelName?: string | null;
+  detailHtml?: string | null;
   releaseDateText?: string | null;
   weightG?: number | null;
   priceKRW?: string | number;
@@ -188,6 +194,21 @@ export interface UpsertImwebProductResult {
   product: ProductSummary;
 }
 
+export interface CorrectExternalMappingInput {
+  actorUserId: string;
+  mappingId: string;
+  operation: 'REMAP' | 'DETACH';
+  newProductId?: string;
+  evidenceUrl: string;
+  reason?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export interface CorrectExternalMappingResult {
+  mapping: ProductExternalMappingSummary;
+}
+
 interface StoredArtist {
   id: string;
   name: string;
@@ -231,6 +252,8 @@ interface StoredStockMovement {
   productId: string;
   type: StockMovementType;
   quantity: number;
+  previousQty: number | null;
+  newQty: number | null;
   reason: string | null;
   createdById: string | null;
   createdAt: Date;
@@ -248,6 +271,7 @@ interface StoredProductExternalMapping {
 }
 
 interface ProductRepository {
+  $transaction<T>(callback: (tx: ProductRepository) => Promise<T>): Promise<T>;
   artist: {
     create(args: { data: Record<string, unknown> }): Promise<StoredArtist>;
     findUnique(args: { where: { id: string } }): Promise<StoredArtist | null>;
@@ -278,7 +302,9 @@ interface ProductRepository {
   };
   productExternalMapping: {
     findUnique(args: {
-      where: { sourceSystem_externalProductId: { sourceSystem: string; externalProductId: string } };
+      where:
+        | { id: string }
+        | { sourceSystem_externalProductId: { sourceSystem: string; externalProductId: string } };
     }): Promise<StoredProductExternalMapping | null>;
     findMany(args: {
       where?: { productId?: string; sourceSystem?: string };
@@ -286,6 +312,13 @@ interface ProductRepository {
     }): Promise<StoredProductExternalMapping[]>;
     create(args: { data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
     update(args: { where: { id: string }; data: Record<string, unknown> }): Promise<StoredProductExternalMapping>;
+  };
+  productOption: {
+    deleteMany(args: { where: { productId: string } }): Promise<Record<string, unknown>>;
+    create(args: { data: Record<string, unknown> }): Promise<Record<string, unknown>>;
+  };
+  actionLog: {
+    create(args: { data: Record<string, unknown> }): Promise<unknown>;
   };
   importRow: {
     create(args: { data: Record<string, unknown> }): Promise<Record<string, unknown>>;
@@ -347,6 +380,8 @@ export class ProductService {
     const name = normalizeRequiredString(input.name, 'name');
     const labelName =
       input.labelName === undefined ? undefined : input.labelName === null ? null : normalizeOptionalString(input.labelName) ?? null;
+    const detailHtml =
+      input.detailHtml === undefined ? undefined : input.detailHtml === null ? null : normalizeOptionalHtml(input.detailHtml, 'detailHtml');
     const releaseDateText =
       input.releaseDateText === undefined
         ? undefined
@@ -362,6 +397,10 @@ export class ProductService {
       input.avgPurchasePriceKRW === undefined
         ? 0
         : normalizeNonNegativeInteger(input.avgPurchasePriceKRW, 'avgPurchasePriceKRW');
+    const initialStockOnHand =
+      input.initialStockOnHand === undefined
+        ? undefined
+        : normalizeNonNegativeInteger(input.initialStockOnHand, 'initialStockOnHand');
     const stockManaged =
       input.stockManaged === undefined ? undefined : normalizeBoolean(input.stockManaged, 'stockManaged');
     const saleStatus =
@@ -388,37 +427,58 @@ export class ProductService {
     if (sku) {
       await this.assertSkuAvailable(sku);
     }
-    if (barcode) {
-      await this.assertBarcodeAvailable(barcode);
-    }
 
     const productId = await this.generateProductId();
 
-    const created = await this.repository.product.create({
-      data: {
-        id: productId,
-        ...(artistId !== undefined ? { artistId } : {}),
-        ...(category !== undefined ? { category } : {}),
-        name,
-        ...(labelName !== undefined ? { labelName } : {}),
-        ...(releaseDateText !== undefined ? { releaseDateText } : {}),
-        ...(weightG !== undefined ? { weightG } : {}),
-        priceKRW,
-        priceStatus: 'CONFIRMED',
-        lastConfirmedPriceKRW: priceKRW,
-        lastConfirmedPriceAt: new Date(),
-        sourcePriceRaw: String(input.priceKRW),
-        avgPurchasePriceKRW,
-        ...(sku !== undefined ? { sku } : {}),
-        ...(barcode !== undefined ? { barcode } : {}),
-        ...(stockManaged !== undefined ? { stockManaged } : {}),
-        ...(saleStatus !== undefined ? { saleStatus } : {}),
-        ...(isDisplayed !== undefined ? { isDisplayed } : {}),
-        ...(categoryMappingSource !== undefined ? { categoryMappingSource } : {}),
-        ...(sourceCategoryCodes !== undefined ? { sourceCategoryCodes } : {}),
-        ...(categoryReviewStatus !== undefined ? { categoryReviewStatus } : {}),
-      },
-    });
+    const productData = {
+      id: productId,
+      ...(artistId !== undefined ? { artistId } : {}),
+      ...(category !== undefined ? { category } : {}),
+      name,
+      ...(labelName !== undefined ? { labelName } : {}),
+      ...(detailHtml !== undefined ? { detailHtml } : {}),
+      ...(releaseDateText !== undefined ? { releaseDateText } : {}),
+      ...(weightG !== undefined ? { weightG } : {}),
+      priceKRW,
+      priceStatus: 'CONFIRMED',
+      lastConfirmedPriceKRW: priceKRW,
+      lastConfirmedPriceAt: new Date(),
+      sourcePriceRaw: String(input.priceKRW),
+      avgPurchasePriceKRW,
+      ...(sku !== undefined ? { sku } : {}),
+      ...(barcode !== undefined ? { barcode } : {}),
+      ...(initialStockOnHand !== undefined
+        ? {
+            stockOnHand: initialStockOnHand,
+            orderBasedStock: initialStockOnHand,
+            shipmentBasedStock: initialStockOnHand,
+          }
+        : {}),
+      ...(stockManaged !== undefined ? { stockManaged } : {}),
+      ...(saleStatus !== undefined ? { saleStatus } : {}),
+      ...(isDisplayed !== undefined ? { isDisplayed } : {}),
+      ...(categoryMappingSource !== undefined ? { categoryMappingSource } : {}),
+      ...(sourceCategoryCodes !== undefined ? { sourceCategoryCodes } : {}),
+      ...(categoryReviewStatus !== undefined ? { categoryReviewStatus } : {}),
+    };
+
+    const created = initialStockOnHand !== undefined && initialStockOnHand > 0
+      ? await this.repository.$transaction(async (tx) => {
+          const product = await tx.product.create({ data: productData });
+          await tx.stockMovement.create({
+            data: {
+              productId: product.id,
+              type: 'INBOUND',
+              quantity: initialStockOnHand,
+              previousQty: 0,
+              newQty: initialStockOnHand,
+              reason: 'INITIAL_STOCK',
+              createdById: input.actorUserId,
+            },
+          });
+          return product;
+        })
+      : await this.repository.product.create({ data: productData });
 
     await this.actionLogWriter.write({
       actorUserId: input.actorUserId,
@@ -486,8 +546,14 @@ export class ProductService {
     ]);
 
     return dryRunImwebProductWorkbookUpload(input, {
-      existingExternalProductIds: new Set(externalMappings.map((mapping) => mapping.externalProductId)),
-      existingSkus: new Set(products.map((product) => product.sku).filter(isPresentString)),
+      existingExternalProductIds: new Map(
+        externalMappings.map((mapping) => [mapping.externalProductId, mapping.productId]),
+      ),
+      existingSkus: new Map(
+        products
+          .filter((product) => isPresentString(product.sku))
+          .map((product) => [product.sku as string, product.id]),
+      ),
       existingBarcodes: new Set(products.map((product) => product.barcode).filter(isPresentString)),
     });
   }
@@ -519,6 +585,93 @@ export class ProductService {
       orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
     });
     return toProductSummary(product, externalMappings);
+  }
+
+  async correctExternalMapping(input: CorrectExternalMappingInput): Promise<CorrectExternalMappingResult> {
+    const actorUserId = normalizeRequiredString(input.actorUserId, 'actorUserId');
+    const mappingId = normalizeRequiredString(input.mappingId, 'mappingId');
+    const operation = normalizeExternalMappingOperation(input.operation);
+    const evidenceUrl = normalizeHttpsUrl(input.evidenceUrl, 'evidenceUrl');
+    const reason = input.reason === undefined ? undefined : normalizeOptionalString(input.reason);
+    const newProductId = operation === 'REMAP'
+      ? normalizeRequiredString(input.newProductId, 'newProductId')
+      : undefined;
+
+    const updated = await this.repository.$transaction(async (tx) => {
+      const mapping = await tx.productExternalMapping.findUnique({ where: { id: mappingId } });
+      if (!mapping) {
+        throw new DomainRuleError('PRODUCT_EXTERNAL_MAPPING_NOT_FOUND', 'External mapping not found', 404);
+      }
+      if (mapping.status !== 'ACTIVE') {
+        throw new DomainRuleError(
+          'PRODUCT_EXTERNAL_MAPPING_NOT_ACTIVE',
+          'Only ACTIVE external mappings can be corrected',
+          409,
+        );
+      }
+
+      const beforeJson = {
+        productId: mapping.productId,
+        status: mapping.status,
+        sourceSystem: mapping.sourceSystem,
+        externalProductId: mapping.externalProductId,
+      };
+
+      const data: Record<string, unknown> = {};
+      if (operation === 'REMAP') {
+        if (!newProductId) {
+          throw new DomainRuleError('VALIDATION_ERROR', 'newProductId is required for REMAP', 400);
+        }
+        if (newProductId === mapping.productId) {
+          throw new DomainRuleError(
+            'PRODUCT_EXTERNAL_MAPPING_SAME_PRODUCT',
+            'newProductId must differ from the current productId',
+            409,
+          );
+        }
+        const targetProduct = await tx.product.findUnique({ where: { id: newProductId } });
+        if (!targetProduct) {
+          throw new DomainRuleError('PRODUCT_NOT_FOUND', 'Target product not found', 404);
+        }
+        data.productId = newProductId;
+      } else {
+        data.status = 'ORPHANED';
+      }
+
+      const corrected = await tx.productExternalMapping.update({
+        where: { id: mappingId },
+        data,
+      });
+
+      await tx.actionLog.create({
+        data: {
+          actorUserId,
+          actionType: 'PRODUCT_EXTERNAL_MAPPING_CORRECTED',
+          targetType: 'ProductExternalMapping',
+          targetId: mappingId,
+          beforeJson,
+          afterJson: {
+            productId: corrected.productId,
+            status: corrected.status,
+            sourceSystem: corrected.sourceSystem,
+            externalProductId: corrected.externalProductId,
+          },
+          metadataJson: {
+            operation,
+            evidenceUrl,
+            reason: reason ?? null,
+            sourceSystem: mapping.sourceSystem,
+            externalProductId: mapping.externalProductId,
+          },
+          ipAddress: input.ipAddress,
+          userAgent: input.userAgent,
+        },
+      });
+
+      return corrected;
+    });
+
+    return { mapping: toExternalMappingSummary(updated) };
   }
 
   async updateProduct(input: UpdateProductInput): Promise<ProductSummary> {
@@ -599,9 +752,6 @@ export class ProductService {
       const barcode =
         input.barcode === null ? null : normalizeOptionalString(input.barcode) ?? null;
       if (barcode !== current.barcode) {
-        if (barcode !== null) {
-          await this.assertBarcodeAvailable(barcode, productId);
-        }
         changes.barcode = barcode;
         beforeJson.barcode = current.barcode;
         afterJson.barcode = barcode;
@@ -627,6 +777,16 @@ export class ProductService {
         changes.labelName = labelName;
         beforeJson.labelName = current.labelName;
         afterJson.labelName = labelName;
+      }
+    }
+
+    if (input.detailHtml !== undefined) {
+      const detailHtml =
+        input.detailHtml === null ? null : normalizeOptionalHtml(input.detailHtml, 'detailHtml');
+      if (detailHtml !== current.detailHtml) {
+        changes.detailHtml = detailHtml;
+        beforeJson.detailHtml = current.detailHtml;
+        afterJson.detailHtml = detailHtml;
       }
     }
 
@@ -733,12 +893,21 @@ export class ProductService {
       },
     });
     if (mapping) {
+      if (mapping.status === 'ORPHANED') {
+        throw new DomainRuleError(
+          'EXTERNAL_MAPPING_ORPHANED',
+          'External mapping is orphaned; correct the mapping before importing this source product',
+          409,
+        );
+      }
+
       const current = await this.findProduct(mapping.productId);
       const productData = toImwebProductWriteData(input.mapped, current);
       const updated = await this.repository.product.update({
         where: { id: current.id },
         data: productData,
       });
+      await this.replaceImwebProductOptions(updated.id, input.mapped);
 
       const refreshedMapping = await this.repository.productExternalMapping.update({
         where: { id: mapping.id },
@@ -774,6 +943,7 @@ export class ProductService {
         ...productData,
       },
     });
+    await this.replaceImwebProductOptions(created.id, input.mapped);
 
     const createdMapping = await this.repository.productExternalMapping.create({
       data: {
@@ -805,6 +975,31 @@ export class ProductService {
     return { status: 'create', product: toProductSummary(created) };
   }
 
+  private async replaceImwebProductOptions(productId: string, mapped: ImwebMappedProduct): Promise<void> {
+    const optionName = normalizeOptionalString(mapped.optionName);
+    const optionValues = mapped.optionValues
+      .map((value) => normalizeOptionalString(value))
+      .filter((value): value is string => value !== undefined);
+
+    await this.repository.productOption.deleteMany({ where: { productId } });
+    if (!optionName || optionValues.length === 0) return;
+
+    await this.repository.productOption.create({
+      data: {
+        productId,
+        name: optionName,
+        position: 0,
+        values: {
+          create: optionValues.map((value, index) => ({
+            value,
+            position: index,
+            priceDeltaKRW: 0,
+          })),
+        },
+      },
+    });
+  }
+
   // ── Stock ──────────────────────────────────────────────────────────────────
 
   async inbound(input: InboundInput): Promise<StockMovementSummary> {
@@ -817,24 +1012,35 @@ export class ProductService {
 
     const reason = input.reason === undefined ? undefined : normalizeOptionalString(input.reason);
 
-    await this.findProduct(productId);
+    const { movement, previousQty, newQty } = await this.repository.$transaction(async (tx) => {
+      const existing = await tx.product.findUnique({ where: { id: productId } });
+      if (!existing) {
+        throw new DomainRuleError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+      }
 
-    await this.repository.product.update({
-      where: { id: productId },
-      data: {
-        stockOnHand: { increment: quantity },
-        shipmentBasedStock: { increment: quantity },
-      },
-    });
+      const updated = await tx.product.update({
+        where: { id: productId },
+        data: {
+          stockOnHand: { increment: quantity },
+          shipmentBasedStock: { increment: quantity },
+        },
+      });
+      const newQty = updated.stockOnHand;
+      const previousQty = newQty - quantity;
 
-    const movement = await this.repository.stockMovement.create({
-      data: {
-        productId,
-        type: 'INBOUND',
-        quantity,
-        ...(reason !== undefined ? { reason } : {}),
-        createdById: input.actorUserId,
-      },
+      const movement = await tx.stockMovement.create({
+        data: {
+          productId,
+          type: 'INBOUND',
+          quantity,
+          previousQty,
+          newQty,
+          ...(reason !== undefined ? { reason } : {}),
+          createdById: input.actorUserId,
+        },
+      });
+
+      return { movement, previousQty, newQty };
     });
 
     await this.actionLogWriter.write({
@@ -842,7 +1048,8 @@ export class ProductService {
       actionType: 'INVENTORY_INBOUND',
       targetType: 'Product',
       targetId: productId,
-      afterJson: { quantity, reason: reason ?? null, movementId: movement.id },
+      beforeJson: { stockOnHand: previousQty },
+      afterJson: { quantity, reason: reason ?? null, previousQty, newQty, movementId: movement.id },
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
     });
@@ -860,24 +1067,35 @@ export class ProductService {
 
     const reason = normalizeRequiredString(input.reason, 'reason');
 
-    await this.findProduct(productId);
+    const { movement, previousQty, newQty } = await this.repository.$transaction(async (tx) => {
+      const existing = await tx.product.findUnique({ where: { id: productId } });
+      if (!existing) {
+        throw new DomainRuleError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+      }
 
-    await this.repository.product.update({
-      where: { id: productId },
-      data: {
-        stockOnHand: { increment: quantity },
-        shipmentBasedStock: { increment: quantity },
-      },
-    });
+      const updated = await tx.product.update({
+        where: { id: productId },
+        data: {
+          stockOnHand: { increment: quantity },
+          shipmentBasedStock: { increment: quantity },
+        },
+      });
+      const newQty = updated.stockOnHand;
+      const previousQty = newQty - quantity;
 
-    const movement = await this.repository.stockMovement.create({
-      data: {
-        productId,
-        type: 'ADJUSTMENT',
-        quantity,
-        reason,
-        createdById: input.actorUserId,
-      },
+      const movement = await tx.stockMovement.create({
+        data: {
+          productId,
+          type: 'ADJUSTMENT',
+          quantity,
+          previousQty,
+          newQty,
+          reason,
+          createdById: input.actorUserId,
+        },
+      });
+
+      return { movement, previousQty, newQty };
     });
 
     await this.actionLogWriter.write({
@@ -885,7 +1103,8 @@ export class ProductService {
       actionType: 'INVENTORY_ADJUST',
       targetType: 'Product',
       targetId: productId,
-      afterJson: { quantity, reason, movementId: movement.id },
+      beforeJson: { stockOnHand: previousQty },
+      afterJson: { quantity, reason, previousQty, newQty, movementId: movement.id },
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
     });
@@ -968,13 +1187,6 @@ export class ProductService {
     }
   }
 
-  private async assertBarcodeAvailable(barcode: string, exceptProductId?: string): Promise<void> {
-    const existing = await this.repository.product.findFirst({ where: { barcode } });
-    if (existing && existing.id !== exceptProductId) {
-      throw new DomainRuleError('DUPLICATE_BARCODE', 'barcode is already in use', 409);
-    }
-  }
-
   private async generateProductId(): Promise<string> {
     const sequence = await this.repository.productSequence.upsert({
       where: { key: 'KODY-PROD' },
@@ -995,6 +1207,27 @@ function normalizeRequiredString(value: unknown, field: string): string {
   return value.trim();
 }
 
+function normalizeExternalMappingOperation(value: unknown): 'REMAP' | 'DETACH' {
+  if (value !== 'REMAP' && value !== 'DETACH') {
+    throw new DomainRuleError('VALIDATION_ERROR', 'operation must be REMAP or DETACH', 400);
+  }
+  return value;
+}
+
+function normalizeHttpsUrl(value: unknown, field: string): string {
+  const raw = normalizeRequiredString(value, field);
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be a valid URL`, 400);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be an https URL`, 400);
+  }
+  return parsed.toString();
+}
+
 function normalizeOptionalString(value: unknown): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -1006,6 +1239,20 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed === '' ? undefined : trimmed;
+}
+
+function normalizeOptionalHtml(value: unknown, field: string): string | null {
+  if (typeof value !== 'string') {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be a string`, 400);
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  if (trimmed.length > 200_000) {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be 200000 characters or fewer`, 400);
+  }
+  return trimmed;
 }
 
 function isPresentString(value: string | null): value is string {
@@ -1163,12 +1410,14 @@ function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredPro
   const priceFields = toImwebPriceWriteData(mapped, current);
   const thumbnailUrl = normalizeOptionalString(mapped.thumbnailUrl);
   const detailHtml = normalizeOptionalString(mapped.detailHtml);
+  const releaseDateText = normalizeOptionalString(mapped.releaseDateText) ?? null;
   return {
     category: mapped.category,
     categoryMappingSource: mapped.categoryMappingSource,
     sourceCategoryCodes: mapped.rawCategoryIds,
     name: mapped.name,
     labelName: normalizeOptionalString(mapped.artistName) ?? null,
+    releaseDateText,
     ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
     ...(detailHtml !== undefined ? { detailHtml } : {}),
     weightG: mapped.weightG,
@@ -1302,6 +1551,7 @@ function toProductSummary(
 function toExternalMappingSummary(mapping: StoredProductExternalMapping): ProductExternalMappingSummary {
   return {
     id: mapping.id,
+    productId: mapping.productId,
     sourceSystem: mapping.sourceSystem,
     externalProductId: mapping.externalProductId,
     externalUrl: mapping.externalUrl,
@@ -1335,6 +1585,8 @@ function toMovementSummary(movement: StoredStockMovement): StockMovementSummary 
     productId: movement.productId,
     type: movement.type,
     quantity: movement.quantity,
+    previousQty: movement.previousQty,
+    newQty: movement.newQty,
     reason: movement.reason,
     createdById: movement.createdById,
     createdAt: movement.createdAt,

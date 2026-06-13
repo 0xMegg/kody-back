@@ -58,6 +58,7 @@ describe('Imweb product dry-run importer', () => {
       avgPurchasePriceKRW: 0,
       optionName: 'VERSION',
       optionValues: ['MUSIC PLANET', 'KTOWN4U'],
+      releaseDateText: '2026-04-30',
     });
     expect(result.mapped?.rawCategoryIds).toEqual(['CATE70', 'CATE65']);
   });
@@ -121,7 +122,7 @@ describe('Imweb product dry-run importer', () => {
     expect(result.status).toBe('create');
     expect(result.errors).toEqual([]);
     expect(result.mapped).toMatchObject({
-      category: 'GOODS',
+      category: null,
       rawCategoryIds: ['CATE999'],
       categoryMappingSource: 'FALLBACK',
     });
@@ -153,7 +154,7 @@ describe('Imweb product dry-run importer', () => {
     );
   });
 
-  it('treats duplicate SKU/barcode as warnings, not identity conflicts', () => {
+  it('treats duplicate SKU as hard conflict and duplicate barcode as non-blocking warning', () => {
     const results = dryRunImwebProductRows(
       [
         validRow({ 상품번호: '6571', 재고번호SKU: 'YP0885', 원산지: '8809704435086' }),
@@ -161,26 +162,51 @@ describe('Imweb product dry-run importer', () => {
         validRow({ 상품번호: '6573', 재고번호SKU: 'YP9999', 원산지: '8809704435086' }),
       ],
       {
-        existingSkus: new Set(['YP9999']),
+        existingSkus: new Map([['YP9999', 'KODY-PROD-000099']]),
         existingBarcodes: new Set(['8809704435086']),
       },
     );
 
-    expect(results.summary).toEqual({ totalRows: 3, create: 3, update: 0, skip: 0, conflict: 0, fail: 0 });
-    expect(results.items.every((item) => item.status === 'create')).toBe(true);
+    expect(results.summary).toEqual({ totalRows: 3, create: 1, update: 0, skip: 0, conflict: 2, fail: 0 });
+    expect(results.items[0].status).toBe('create');
     expect(results.items[0].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_BARCODE', field: 'barcode', message: '이미 존재하는 바코드입니다. 검색 보조값으로만 유지합니다.' }));
-    expect(results.items[1].warnings).toContainEqual(expect.objectContaining({ code: 'DUPLICATE_SKU_IN_FILE', field: 'sku', message: '파일 안에서 중복된 SKU입니다. 검색 보조값으로만 유지합니다.' }));
-    expect(results.items[2].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_SKU', field: 'sku', message: '이미 존재하는 SKU입니다. 검색 보조값으로만 유지합니다.' }));
+    expect(results.items[0].conflicts).toEqual([]);
+
+    expect(results.items[1].status).toBe('conflict');
+    expect(results.items[1].warnings).toContainEqual(expect.objectContaining({ code: 'DUPLICATE_SKU_IN_FILE', field: 'sku', message: '파일 안에서 중복된 SKU입니다. SKU는 고유해야 합니다.' }));
+    expect(results.items[1].conflicts).toContainEqual({ field: 'sku', value: 'YP0885', reason: 'duplicate_in_file' });
+
+    expect(results.items[2].status).toBe('conflict');
+    expect(results.items[2].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_SKU', field: 'sku', message: '이미 존재하는 SKU입니다. SKU는 고유해야 합니다.' }));
+    expect(results.items[2].warnings).toContainEqual(expect.objectContaining({ code: 'DUPLICATE_BARCODE_IN_FILE', field: 'barcode', message: '파일 안에서 중복된 바코드입니다. 검색 보조값으로만 유지합니다.' }));
+    expect(results.items[2].conflicts).toContainEqual({ field: 'sku', value: 'YP9999', reason: 'existing' });
+  });
+
+  it('treats SKU collision with the same OMS product as a non-blocking warning during update', () => {
+    const results = dryRunImwebProductRows(
+      [validRow({ 상품번호: '6571', 재고번호SKU: 'YP0885', 원산지: '8809704435086' })],
+      {
+        existingExternalProductIds: new Map([['6571', 'KODY-PROD-000099']]),
+        existingSkus: new Map([['YP0885', 'KODY-PROD-000099']]),
+        existingBarcodes: new Set(['8809704435086']),
+      },
+    );
+
+    expect(results.summary).toEqual({ totalRows: 1, create: 0, update: 1, skip: 0, conflict: 0, fail: 0 });
+    expect(results.items[0].status).toBe('update');
+    expect(results.items[0].conflicts).toEqual([]);
+    expect(results.items[0].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_SKU', field: 'sku' }));
+    expect(results.items[0].warnings).toContainEqual(expect.objectContaining({ code: 'EXISTING_BARCODE', field: 'barcode' }));
   });
 
   it('uses source external product ID for update identity and duplicate-file conflicts', () => {
     const results = dryRunImwebProductRows(
       [
-        validRow({ 상품번호: '6571' }),
-        validRow({ 상품번호: '6572' }),
-        validRow({ 상품번호: '6572' }),
+        validRow({ 상품번호: '6571', 재고번호SKU: 'YP0001', 원산지: '8809000000001' }),
+        validRow({ 상품번호: '6572', 재고번호SKU: 'YP0002', 원산지: '8809000000002' }),
+        validRow({ 상품번호: '6572', 재고번호SKU: 'YP0003', 원산지: '8809000000003' }),
       ],
-      { existingExternalProductIds: new Set(['6571']) },
+      { existingExternalProductIds: new Map([['6571', 'KODY-PROD-000099']]) },
     );
 
     expect(results.summary).toEqual({ totalRows: 3, create: 1, update: 1, skip: 0, conflict: 1, fail: 0 });
