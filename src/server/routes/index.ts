@@ -13,6 +13,8 @@ import { registerPasswordResetRoutes } from './password-reset.js';
 import { registerPaymentRoutes } from './payments.js';
 import { registerProductRoutes } from './products.js';
 import { registerProfileRoutes } from './profile.js';
+import { registerShipmentRoutes } from './shipments.js';
+import { registerUploadRoutes } from './uploads.js';
 
 export function registerRoutes(server: FastifyInstance): void {
   registerAccountRoutes(server);
@@ -28,5 +30,7 @@ export function registerRoutes(server: FastifyInstance): void {
   registerPaymentRoutes(server);
   registerProductRoutes(server);
   registerProfileRoutes(server);
+  registerShipmentRoutes(server);
+  registerUploadRoutes(server);
   registerHealthRoutes(server);
 }

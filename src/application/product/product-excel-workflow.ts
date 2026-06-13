@@ -121,8 +121,8 @@ export function parseImwebProductWorkbook(input: ProductWorkbookUploadInput): Re
 }
 
 export interface ProductWorkbookDryRunOptions {
-  existingExternalProductIds?: ReadonlySet<string>;
-  existingSkus?: ReadonlySet<string>;
+  existingExternalProductIds?: ReadonlyMap<string, string>;
+  existingSkus?: ReadonlyMap<string, string>;
   existingBarcodes?: ReadonlySet<string>;
 }
 

@@ -148,6 +148,141 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('creates product with Imweb-style detailHtml and persists the editor HTML contract', async () => {
+    const actor = buildActor();
+    const detailHtml = '<p style="text-align: center;"><strong><span style="font-size: 24px;">PRE-ORDER DEADLINE</span></strong></p><p><img src="https://assets.kody.test/product-detail/draft/image.webp" style="width: 699px;"></p>';
+    const product = buildStoredProduct({ id: 'KODY-PROD-000013', detailHtml });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 13,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ detailHtml }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.data.detailHtml).toBe(detailHtml);
+    expect(prisma.product.create.mock.calls[0][0].data).toMatchObject({ detailHtml });
+
+    await server.close();
+  });
+
+  it('creates product with initialStockOnHand and writes one initial inbound movement atomically', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ id: 'KODY-PROD-000011', stockOnHand: 12, orderBasedStock: 12, shipmentBasedStock: 12 });
+    const movement = buildStoredMovement({ productId: 'KODY-PROD-000011', quantity: 12, previousQty: 0, newQty: 12 });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      createdMovement: movement,
+      nextProductSeq: 11,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ initialStockOnHand: 12 }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.data.stockOnHand).toBe(12);
+    expect(body.data.orderBasedStock).toBe(12);
+    expect(body.data.shipmentBasedStock).toBe(12);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.product.create.mock.calls[0][0].data).toMatchObject({
+      stockOnHand: 12,
+      orderBasedStock: 12,
+      shipmentBasedStock: 12,
+    });
+    expect(prisma.stockMovement.create.mock.calls).toHaveLength(1);
+    expect(prisma.stockMovement.create.mock.calls[0][0].data).toMatchObject({
+      productId: 'KODY-PROD-000011',
+      type: 'INBOUND',
+      quantity: 12,
+      previousQty: 0,
+      newQty: 12,
+      reason: 'INITIAL_STOCK',
+      createdById: actor.id,
+    });
+
+    await server.close();
+  });
+
+  it('creates product with zero initialStockOnHand without writing a fake movement', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ id: 'KODY-PROD-000012', stockOnHand: 0, orderBasedStock: 0, shipmentBasedStock: 0 });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 12,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ initialStockOnHand: 0 }),
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(prisma.product.create.mock.calls[0][0].data).toMatchObject({
+      stockOnHand: 0,
+      orderBasedStock: 0,
+      shipmentBasedStock: 0,
+    });
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects direct event-derived stock edits on Product create and update payloads', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()], products: [buildStoredProduct()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const createResponse = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ orderBasedStock: 99 }),
+    });
+    const updateResponse = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { shipmentBasedStock: 99 },
+    });
+
+    expect(createResponse.statusCode).toBe(400);
+    expect(createResponse.json().error.message).toContain('orderBasedStock cannot be set directly');
+    expect(updateResponse.statusCode).toBe(400);
+    expect(updateResponse.json().error.message).toContain('shipmentBasedStock cannot be set directly');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('rejects invalid saleStatus on POST /products as VALIDATION_ERROR', async () => {
     const actor = buildActor();
     const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
@@ -164,6 +299,79 @@ describe('product routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(body.error.code).toBe('VALIDATION_ERROR');
+
+    await server.close();
+  });
+
+  it('allows duplicate barcode on POST /products since SKU is the only blocking uniqueness check', async () => {
+    const actor = buildActor();
+    const existingProduct = buildStoredProduct({
+      id: 'KODY-PROD-000099',
+      sku: null,
+      barcode: '8809704435086',
+    });
+    const createdProduct = buildStoredProduct({
+      id: 'KODY-PROD-000100',
+      sku: null,
+      barcode: '8809704435086',
+    });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      products: [existingProduct],
+      createdProduct,
+      nextProductSeq: 100,
+    });
+    prisma.product.findFirst = vi.fn(async (args: { where: { sku?: string; barcode?: string } }) => {
+      if (args.where.sku !== undefined) {
+        return existingProduct.sku === args.where.sku ? existingProduct : null;
+      }
+      if (args.where.barcode !== undefined) {
+        return existingProduct.barcode === args.where.barcode ? existingProduct : null;
+      }
+      return null;
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ barcode: '8809704435086' }),
+    });
+
+    expect(response.statusCode).toBe(201);
+
+    await server.close();
+  });
+
+  it('rejects duplicate SKU on POST /products as DUPLICATE_SKU', async () => {
+    const actor = buildActor();
+    const existingProduct = buildStoredProduct({ id: 'KODY-PROD-000099', sku: 'YP0885' });
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()], products: [existingProduct] });
+    prisma.product.findFirst = vi.fn(async (args: { where: { sku?: string; barcode?: string } }) => {
+      if (args.where.sku !== undefined) {
+        return existingProduct.sku === args.where.sku ? existingProduct : null;
+      }
+      if (args.where.barcode !== undefined) {
+        return existingProduct.barcode === args.where.barcode ? existingProduct : null;
+      }
+      return null;
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ sku: 'YP0885' }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error.code).toBe('DUPLICATE_SKU');
 
     await server.close();
   });
@@ -351,6 +559,30 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('updates and clears detailHtml on PATCH /products/:id', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ detailHtml: '<p>Old detail</p>' });
+    const updated = buildStoredProduct({ detailHtml: null });
+    const prisma = buildPrisma({ actor, products: [product], updatedProduct: updated });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { detailHtml: null },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.detailHtml).toBeNull();
+    expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({ detailHtml: null });
+
+    await server.close();
+  });
+
   it('returns 404 on PATCH /products/:id when not found', async () => {
     const actor = buildActor();
     const prisma = buildPrisma({ actor, products: [] });
@@ -375,8 +607,8 @@ describe('product routes', () => {
 
   it('processes inbound and returns 201', async () => {
     const actor = buildActor();
-    const product = buildStoredProduct();
-    const movement = buildStoredMovement();
+    const product = buildStoredProduct({ stockOnHand: 14 });
+    const movement = buildStoredMovement({ previousQty: 14, newQty: 114 });
     const prisma = buildPrisma({ actor, products: [product], createdMovement: movement });
     const server = buildTestServer(prisma);
     await server.ready();
@@ -392,6 +624,12 @@ describe('product routes', () => {
     expect(response.statusCode).toBe(201);
     expect(body.ok).toBe(true);
     expect(body.data.type).toBe('INBOUND');
+    expect(body.data.previousQty).toBe(14);
+    expect(body.data.newQty).toBe(114);
+    expect(prisma.stockMovement.create.mock.calls[0][0].data).toMatchObject({
+      previousQty: 14,
+      newQty: 114,
+    });
 
     await server.close();
   });
@@ -441,8 +679,8 @@ describe('product routes', () => {
 
   it('processes adjust and returns 200', async () => {
     const actor = buildActor();
-    const product = buildStoredProduct();
-    const movement = buildStoredMovement({ type: 'ADJUSTMENT', quantity: -5 });
+    const product = buildStoredProduct({ stockOnHand: 14 });
+    const movement = buildStoredMovement({ type: 'ADJUSTMENT', quantity: -5, previousQty: 14, newQty: 9 });
     const prisma = buildPrisma({ actor, products: [product], createdMovement: movement });
     const server = buildTestServer(prisma);
     await server.ready();
@@ -458,6 +696,12 @@ describe('product routes', () => {
     expect(response.statusCode).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.data.type).toBe('ADJUSTMENT');
+    expect(body.data.previousQty).toBe(14);
+    expect(body.data.newQty).toBe(9);
+    expect(prisma.stockMovement.create.mock.calls[0][0].data).toMatchObject({
+      previousQty: 14,
+      newQty: 9,
+    });
 
     await server.close();
   });
@@ -678,12 +922,95 @@ describe('product routes', () => {
     await server.close();
   });
 
+  // ── POST /products/external-mappings/correct ───────────────────────────────
+
+  it('allows ADMIN to REMAP an external mapping with evidence and audit log', async () => {
+    const actor = buildActor({ roles: ['ADMIN'] });
+    const mapping = buildStoredExternalMapping({ productId: 'KODY-PROD-OLD' });
+    const remapped = buildStoredExternalMapping({ productId: 'KODY-PROD-NEW' });
+    const targetProduct = buildStoredProduct({ id: 'KODY-PROD-NEW' });
+    const prisma = buildPrisma({ actor, products: [targetProduct], externalMappings: [mapping] });
+    prisma.productExternalMapping.findUnique = vi.fn(async (args: { where: { id?: string } }) => {
+      if (args.where.id === mapping.id) return mapping;
+      return null;
+    });
+    prisma.productExternalMapping.update = vi.fn(async () => remapped);
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/external-mappings/correct',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        mappingId: mapping.id,
+        operation: 'REMAP',
+        newProductId: 'KODY-PROD-NEW',
+        evidenceUrl: 'https://evidence.example/ticket/123',
+        reason: 'wrong initial import mapping',
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.mapping.productId).toBe('KODY-PROD-NEW');
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.productExternalMapping.update.mock.calls[0][0]).toMatchObject({
+      where: { id: mapping.id },
+      data: { productId: 'KODY-PROD-NEW' },
+    });
+    expect(prisma.actionLog.create.mock.calls[0][0].data).toMatchObject({
+      actorUserId: actor.id,
+      actionType: 'PRODUCT_EXTERNAL_MAPPING_CORRECTED',
+      targetType: 'ProductExternalMapping',
+      targetId: mapping.id,
+      metadataJson: {
+        operation: 'REMAP',
+        evidenceUrl: 'https://evidence.example/ticket/123',
+        reason: 'wrong initial import mapping',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+    });
+
+    await server.close();
+  });
+
+  it('forbids OPERATIONS from executing external mapping correction', async () => {
+    const actor = buildActor({ roles: ['OPERATIONS'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/external-mappings/correct',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        mappingId: 'mapping_1',
+        operation: 'DETACH',
+        evidenceUrl: 'https://evidence.example/ticket/124',
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.error.code).toBe('AUTHORIZATION_ERROR');
+    expect(prisma.productExternalMapping.update).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   // ── GET /products/:id/movements ────────────────────────────────────────────
 
   it('returns movement list on GET /products/:id/movements', async () => {
     const actor = buildActor();
     const product = buildStoredProduct();
-    const movements = [buildStoredMovement(), buildStoredMovement({ id: 'mov_2', type: 'ADJUSTMENT', quantity: -3 })];
+    const movements = [
+      buildStoredMovement({ previousQty: 0, newQty: 100 }),
+      buildStoredMovement({ id: 'mov_2', type: 'ADJUSTMENT', quantity: -3, previousQty: 100, newQty: 97 }),
+    ];
     const prisma = buildPrisma({ actor, products: [product], movements });
     const server = buildTestServer(prisma);
     await server.ready();
@@ -699,6 +1026,8 @@ describe('product routes', () => {
     expect(body.ok).toBe(true);
     expect(Array.isArray(body.data)).toBe(true);
     expect(body.data).toHaveLength(2);
+    expect(body.data[0]).toMatchObject({ previousQty: 0, newQty: 100 });
+    expect(body.data[1]).toMatchObject({ previousQty: 100, newQty: 97 });
 
     await server.close();
   });
@@ -786,6 +1115,7 @@ function buildStoredArtist(overrides: Partial<{ id: string; name: string }> = {}
 function buildStoredProduct(overrides: Partial<{
   id: string; name: string; artistId: string | null; category: ProductCategory | null; weightG: number | null;
   labelName: string | null; releaseDateText: string | null; sku: string | null; barcode: string | null;
+  stockOnHand: number; orderBasedStock: number; shipmentBasedStock: number;
   stockManaged: boolean; saleStatus: ProductSaleStatus;
   isDisplayed: boolean; categoryMappingSource: CategoryMappingSource; sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus; thumbnailUrl: string | null; detailHtml: string | null;
@@ -809,9 +1139,9 @@ function buildStoredProduct(overrides: Partial<{
     barcode: overrides.barcode === undefined ? null : overrides.barcode,
     avgPurchasePriceKRW: 12000,
     stockManaged: overrides.stockManaged ?? true,
-    stockOnHand: 0,
-    orderBasedStock: 0,
-    shipmentBasedStock: 0,
+    stockOnHand: overrides.stockOnHand ?? 0,
+    orderBasedStock: overrides.orderBasedStock ?? 0,
+    shipmentBasedStock: overrides.shipmentBasedStock ?? 0,
     saleStatus: overrides.saleStatus ?? ('DRAFT' as ProductSaleStatus),
     isDisplayed: overrides.isDisplayed ?? false,
     categoryMappingSource: overrides.categoryMappingSource ?? ('EXACT' as CategoryMappingSource),
@@ -823,13 +1153,15 @@ function buildStoredProduct(overrides: Partial<{
 }
 
 function buildStoredMovement(overrides: Partial<{
-  id: string; type: StockMovementType; quantity: number;
+  id: string; productId: string; type: StockMovementType; quantity: number; previousQty: number | null; newQty: number | null;
 }> = {}) {
   return {
     id: overrides.id ?? 'mov_1',
-    productId: PRODUCT_ID,
+    productId: overrides.productId ?? PRODUCT_ID,
     type: (overrides.type ?? 'INBOUND') as StockMovementType,
     quantity: overrides.quantity ?? 100,
+    previousQty: overrides.previousQty === undefined ? null : overrides.previousQty,
+    newQty: overrides.newQty === undefined ? null : overrides.newQty,
     reason: null,
     createdById: 'admin_1',
     createdAt: new Date('2026-05-27T00:00:00Z'),
@@ -869,7 +1201,7 @@ function buildPrisma(input: PrismaInput) {
   const movements = input.movements ?? [];
   const externalMappings = input.externalMappings ?? [];
 
-  return {
+  const prisma = {
     user: {
       findUnique: vi.fn(async (args: { where: { id: string } }) => {
         if (args.where.id === input.actor.id) return input.actor;
@@ -897,7 +1229,19 @@ function buildPrisma(input: PrismaInput) {
         const take = args.take ?? products.length;
         return products.slice(0, take);
       }),
-      update: vi.fn(async () => input.updatedProduct ?? products[0]),
+      update: vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => {
+        const base = input.updatedProduct ?? products.find((p) => p.id === args.where.id) ?? products[0];
+        const stockIncrement = (args.data.stockOnHand as { increment?: number } | undefined)?.increment;
+        const shipmentIncrement = (args.data.shipmentBasedStock as { increment?: number } | undefined)?.increment;
+        if (typeof stockIncrement === 'number' || typeof shipmentIncrement === 'number') {
+          return {
+            ...base,
+            stockOnHand: base.stockOnHand + (stockIncrement ?? 0),
+            shipmentBasedStock: base.shipmentBasedStock + (shipmentIncrement ?? 0),
+          };
+        }
+        return base;
+      }),
     },
     productSequence: {
       upsert: vi.fn(async () => ({ key: 'KODY-PROD', lastSeq: input.nextProductSeq ?? 1 })),
@@ -929,5 +1273,10 @@ function buildPrisma(input: PrismaInput) {
       update: vi.fn(async () => ({})),
     },
     actionLog: { create: vi.fn(async () => ({})) },
+  };
+
+  return {
+    ...prisma,
+    $transaction: vi.fn(async (callback: (tx: typeof prisma) => Promise<unknown>) => callback(prisma)),
   };
 }

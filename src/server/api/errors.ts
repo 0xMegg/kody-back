@@ -68,5 +68,20 @@ export function toApiError(error: unknown): ApiError {
     return new ApiError(error.statusCode, error.code, error.message);
   }
 
+  if (isDomainRuleErrorLike(error)) {
+    return new ApiError(error.statusCode, error.code, error.message);
+  }
+
   return new ApiError(500, 'INTERNAL_ERROR', 'An unexpected error occurred');
+}
+
+function isDomainRuleErrorLike(error: unknown): error is { statusCode: number; code: string; message: string } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'DomainRuleError' &&
+    typeof (error as { statusCode?: unknown }).statusCode === 'number' &&
+    typeof (error as { code?: unknown }).code === 'string' &&
+    typeof (error as { message?: unknown }).message === 'string'
+  );
 }

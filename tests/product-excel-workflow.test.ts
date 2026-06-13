@@ -39,8 +39,8 @@ function validImwebRow(overrides: Record<string, unknown> = {}): Record<string, 
 describe('product Excel workflow', () => {
   it('parses an .xlsx upload into importer dry-run rows with warning codes and reviewRequired', () => {
     const contentBase64 = workbookBase64([
-      validImwebRow({ 상품번호: '6571', 카테고리ID: 'CATE999' }),
-      validImwebRow({ 상품번호: '6572', 판매가: '가격없음' }),
+      validImwebRow({ 상품번호: '6571', 카테고리ID: 'CATE999', 재고번호SKU: 'YP0885', 원산지: '8809704435086' }),
+      validImwebRow({ 상품번호: '6572', 판매가: '가격없음', 재고번호SKU: 'YP0886', 원산지: '8809704435087' }),
     ]);
 
     const result = dryRunImwebProductWorkbookUpload({

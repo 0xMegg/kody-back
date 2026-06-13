@@ -8,6 +8,7 @@ import {
 } from '@/application/product/product-excel-workflow.js';
 import type {
   AdjustInput,
+  CorrectExternalMappingInput,
   CreateProductInput,
   InboundInput,
   ListProductsInput,
@@ -89,6 +90,24 @@ export function registerProductRoutes(server: FastifyInstance): void {
         throw new ApiError(413, 'SELECTION_LIMIT_EXCEEDED', `Cannot export more than ${IMWEB_EXPORT_MAX_SELECTION} products at once.`);
       }
       const result = await server.services.products.exportImwebProducts(productIds);
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.post(
+    '/products/external-mappings/correct',
+    { preHandler: requirePermission({ resource: 'product', action: 'write' }) },
+    async (request, reply) => {
+      assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN']);
+      const body = parseCorrectExternalMappingBody(request.body);
+      const result = await server.services.products.correctExternalMapping({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
+        ...body,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
 
       reply.status(200);
       return successResponse(result);
@@ -181,6 +200,7 @@ type CreateBody = Omit<CreateProductInput, 'actorUserId' | 'ipAddress' | 'userAg
 type UpdateBody = Omit<UpdateProductInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 type InboundBody = Omit<InboundInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 type AdjustBody = Omit<AdjustInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
+type CorrectExternalMappingBody = Omit<CorrectExternalMappingInput, 'actorUserId' | 'ipAddress' | 'userAgent'>;
 
 function assertAnyRole(actualRoles: readonly Role[], allowedRoles: readonly Role[]): void {
   if (!actualRoles.some((role) => allowedRoles.includes(role))) {
@@ -203,6 +223,25 @@ function parseProductIdsBody(body: unknown): string[] {
     throw new ValidationError('Request body must be an object');
   }
   return parseStringArray(body.productIds, 'productIds');
+}
+
+function parseCorrectExternalMappingBody(body: unknown): CorrectExternalMappingBody {
+  if (!isRecord(body)) {
+    throw new ValidationError('Request body must be an object');
+  }
+  const operation = parseExternalMappingOperation(body.operation);
+  const result: CorrectExternalMappingBody = {
+    mappingId: parseRequiredString(body.mappingId, 'mappingId'),
+    operation,
+    evidenceUrl: parseRequiredString(body.evidenceUrl, 'evidenceUrl'),
+  };
+  if (operation === 'REMAP') {
+    result.newProductId = parseRequiredString(body.newProductId, 'newProductId');
+  }
+  if (body.reason !== undefined && body.reason !== null) {
+    result.reason = parseRequiredString(body.reason, 'reason');
+  }
+  return result;
 }
 
 function parseCreateBody(body: unknown): CreateBody {
@@ -242,8 +281,21 @@ function parseCreateBody(body: unknown): CreateBody {
     );
   }
 
+  if (body.initialStockOnHand !== undefined) {
+    result.initialStockOnHand = parseNonNegativeInteger(
+      body.initialStockOnHand,
+      'initialStockOnHand',
+    );
+  }
+
+  rejectDirectStockFields(body);
+
   if (body.labelName !== undefined) {
     result.labelName = body.labelName === null ? null : parseRequiredString(body.labelName, 'labelName');
+  }
+
+  if (body.detailHtml !== undefined) {
+    result.detailHtml = body.detailHtml === null ? null : parseString(body.detailHtml, 'detailHtml');
   }
 
   if (body.releaseDateText !== undefined) {
@@ -324,6 +376,10 @@ function parseUpdateBody(body: unknown): UpdateBody {
     result.labelName = body.labelName === null ? null : parseRequiredString(body.labelName, 'labelName');
   }
 
+  if (body.detailHtml !== undefined) {
+    result.detailHtml = body.detailHtml === null ? null : parseString(body.detailHtml, 'detailHtml');
+  }
+
   if (body.releaseDateText !== undefined) {
     result.releaseDateText =
       body.releaseDateText === null ? null : parseRequiredString(body.releaseDateText, 'releaseDateText');
@@ -353,7 +409,17 @@ function parseUpdateBody(body: unknown): UpdateBody {
     result.categoryReviewStatus = parseCategoryReviewStatus(body.categoryReviewStatus);
   }
 
+  rejectDirectStockFields(body);
+
   return result;
+}
+
+function rejectDirectStockFields(body: Record<string, unknown>): void {
+  for (const field of ['stockOnHand', 'orderBasedStock', 'shipmentBasedStock'] as const) {
+    if (body[field] !== undefined) {
+      throw new ValidationError(`${field} cannot be set directly; use initialStockOnHand on create or stock movement endpoints after create`);
+    }
+  }
 }
 
 function parseInboundBody(body: unknown): InboundBody {
@@ -442,6 +508,21 @@ function parseRequiredString(value: unknown, field: string): string {
     throw new ValidationError(`${field} is required`);
   }
 
+  return value;
+}
+
+function parseString(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new ValidationError(`${field} must be a string`);
+  }
+
+  return value;
+}
+
+function parseExternalMappingOperation(value: unknown): 'REMAP' | 'DETACH' {
+  if (value !== 'REMAP' && value !== 'DETACH') {
+    throw new ValidationError('operation must be REMAP or DETACH');
+  }
   return value;
 }
 

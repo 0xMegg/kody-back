@@ -14,6 +14,11 @@ export interface ServerConfig {
   smtpSecure: boolean;
   smtpRequireTls: boolean;
   emailFrom: string;
+  productAssetUploadDir: string;
+  productAssetLocalPublicBaseUrl: string;
+  productAssetS3Bucket?: string;
+  productAssetS3Region?: string;
+  productAssetS3PublicBaseUrl?: string;
 }
 
 export function loadConfig(): ServerConfig {
@@ -41,6 +46,14 @@ export function loadConfig(): ServerConfig {
     smtpSecure: parseBoolean(process.env.SMTP_SECURE, false),
     smtpRequireTls: parseBoolean(process.env.SMTP_REQUIRE_TLS, false),
     emailFrom: process.env.EMAIL_FROM || 'no-reply@kody.test',
+    productAssetUploadDir: process.env.PRODUCT_ASSET_UPLOAD_DIR || '.uploads',
+    productAssetLocalPublicBaseUrl:
+      process.env.PRODUCT_ASSET_LOCAL_PUBLIC_BASE_URL ||
+      process.env.BACKEND_PUBLIC_ORIGIN ||
+      `http://localhost:${Number(process.env.PORT) || 4000}`,
+    productAssetS3Bucket: process.env.PRODUCT_ASSET_S3_BUCKET,
+    productAssetS3Region: process.env.PRODUCT_ASSET_S3_REGION || process.env.AWS_REGION,
+    productAssetS3PublicBaseUrl: process.env.PRODUCT_ASSET_S3_PUBLIC_BASE_URL,
   };
 }
 

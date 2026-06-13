@@ -9,6 +9,13 @@ const testConfig: ServerConfig = {
   corsOrigin: '*',
   databaseUrl: 'postgresql://test:test@localhost:5432/test',
   authJwtSecret: 'test-secret',
+  appOrigin: 'http://localhost:3000',
+  smtpPort: 1025,
+  smtpSecure: false,
+  smtpRequireTls: false,
+  emailFrom: 'no-reply@kody.test',
+  productAssetUploadDir: '/tmp/kody-test-uploads',
+  productAssetLocalPublicBaseUrl: 'http://localhost:4000',
 };
 
 export function createMockPrisma(overrides: Partial<PrismaClient> = {}) {

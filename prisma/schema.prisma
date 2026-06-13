@@ -174,6 +174,7 @@ enum ActionType {
   ACCOUNT_UPDATE
   PRODUCT_CREATE
   PRODUCT_UPDATE
+  PRODUCT_EXTERNAL_MAPPING_CORRECTED
   USER_LOGIN
   USER_LOGOUT
   USER_ROLE_CHANGE
@@ -224,6 +225,7 @@ model User {
   salesAccounts       Account[]            @relation("SalesRep")
   salesOrders         Order[]              @relation("OrderSalesRep")
   stockMovements      StockMovement[]
+  shipmentEvents      ShipmentEvent[]     @relation("ShipmentEventActor")
   actionLogs          ActionLog[]          @relation("ActionLogActor")
 }
 
@@ -562,15 +564,20 @@ model StockMovement {
   productId   String
   type        StockMovementType
   quantity    Int
-  reason      String?
-  createdById String?
-  createdAt   DateTime          @default(now())
+  previousQty Int?
+  newQty      Int?
+  reason         String?
+  createdById    String?
+  shipmentItemId String?
+  createdAt      DateTime          @default(now())
 
   // Relations
   product   Product @relation(fields: [productId], references: [id])
-  createdBy User?   @relation(fields: [createdById], references: [id])
+  shipmentItem ShipmentItem? @relation(fields: [shipmentItemId], references: [id])
+  createdBy    User?         @relation(fields: [createdById], references: [id])
 
   @@index([productId])
+  @@index([shipmentItemId])
 }
 
 // =============================================================================
@@ -594,7 +601,8 @@ model Order {
   // Relations
   account  Account     @relation(fields: [accountId], references: [id])
   salesRep User        @relation("OrderSalesRep", fields: [salesRepId], references: [id])
-  items    OrderItem[]
+  items     OrderItem[]
+  shipments Shipment[]
 
   @@index([accountId])
   @@index([salesRepId])
@@ -671,6 +679,7 @@ model FxRate {
 /// Shipment ID follows business format: SHIP-YYMMDD-NN
 model Shipment {
   id                String         @id // Business ID: SHIP-YYMMDD-NN
+  orderId           String?
   accountId         String
   shippingAddressId String
   shipDate          DateTime?
@@ -682,10 +691,13 @@ model Shipment {
   updatedAt         DateTime       @updatedAt
 
   // Relations
+  order           Order?          @relation(fields: [orderId], references: [id])
   account         Account         @relation(fields: [accountId], references: [id])
   shippingAddress ShippingAddress @relation(fields: [shippingAddressId], references: [id])
   items           ShipmentItem[]
+  events          ShipmentEvent[]
 
+  @@index([orderId])
   @@index([accountId])
   @@index([shippingAddressId])
 }
@@ -702,12 +714,29 @@ model ShipmentItem {
   createdAt   DateTime @default(now())
 
   // Relations
-  shipment  Shipment  @relation(fields: [shipmentId], references: [id])
-  orderItem OrderItem @relation(fields: [orderItemId], references: [id])
+  shipment      Shipment       @relation(fields: [shipmentId], references: [id])
+  orderItem     OrderItem      @relation(fields: [orderItemId], references: [id])
   product   Product   @relation(fields: [productId], references: [id])
+  stockMovements StockMovement[]
 
   @@index([shipmentId])
   @@index([orderItemId])
+}
+
+model ShipmentEvent {
+  id           String   @id @default(cuid())
+  shipmentId   String
+  eventType    String
+  actorUserId  String?
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id])
+  actor    User?    @relation("ShipmentEventActor", fields: [actorUserId], references: [id])
+
+  @@index([shipmentId])
+  @@index([eventType])
+  @@index([createdAt])
 }
 
 // =============================================================================
