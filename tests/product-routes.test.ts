@@ -177,6 +177,84 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('sanitizes editor detailHtml on POST /products and preserves the allowed contract while dropping disallowed style props', async () => {
+    const actor = buildActor();
+    const inputDetailHtml = '<div class="detail" style="display: block;"><p style="text-align: center; color: red;"><strong><span style="font-size: 24px;">TEXT</span></strong><br><img src="https://assets.kody.test/product-detail/image.webp" alt="cover" class="hero" style="width: 699px; background-image: url(javascript:alert(1));"></p></div>';
+    const product = buildStoredProduct({ id: 'KODY-PROD-000014' });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 14,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ detailHtml: inputDetailHtml }),
+    });
+
+    expect(response.statusCode).toBe(201);
+    const persistedDetailHtml = String(prisma.product.create.mock.calls[0][0].data.detailHtml);
+    expect(persistedDetailHtml).toContain('<div');
+    expect(persistedDetailHtml).toContain('<p');
+    expect(persistedDetailHtml).toContain('<strong>');
+    expect(persistedDetailHtml).toContain('<span');
+    expect(persistedDetailHtml).toContain('<br>');
+    expect(persistedDetailHtml).toContain('<img');
+    expect(persistedDetailHtml).toContain('class="detail"');
+    expect(persistedDetailHtml).toContain('alt="cover"');
+    expect(persistedDetailHtml).toContain('text-align: center');
+    expect(persistedDetailHtml).toContain('font-size: 24px');
+    expect(persistedDetailHtml).toContain('width: 699px');
+    expect(persistedDetailHtml).toContain('display: block');
+    expect(persistedDetailHtml).not.toContain('color');
+    expect(persistedDetailHtml).not.toContain('background-image');
+    expect(persistedDetailHtml).not.toContain('url(');
+    expect(persistedDetailHtml).not.toContain('javascript:');
+
+    await server.close();
+  });
+
+  it('strips dangerous tags, attributes, and image URLs from detailHtml on POST /products', async () => {
+    const actor = buildActor();
+    const inputDetailHtml = '<p onclick="alert(1)" style="text-align: center; background-image: url(javascript:alert(1));">Hello <script>alert(1)</script><img src="javascript:alert(2)" onerror="alert(3)"><img src="http://example.test/bad.webp"><img src="/api/uploads/product-detail-images/local/a.webp" onload="alert(4)" alt="ok"></p>';
+    const product = buildStoredProduct({ id: 'KODY-PROD-000015' });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 15,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ detailHtml: inputDetailHtml }),
+    });
+
+    expect(response.statusCode).toBe(201);
+    const persistedDetailHtml = String(prisma.product.create.mock.calls[0][0].data.detailHtml);
+    expect(persistedDetailHtml).not.toContain('<script');
+    expect(persistedDetailHtml).not.toContain('onclick');
+    expect(persistedDetailHtml).not.toContain('onerror');
+    expect(persistedDetailHtml).not.toContain('onload');
+    expect(persistedDetailHtml).not.toContain('javascript:');
+    expect(persistedDetailHtml).not.toContain('background-image');
+    expect(persistedDetailHtml).not.toContain('url(');
+    expect(persistedDetailHtml).not.toContain('http://example.test');
+    expect(persistedDetailHtml).toContain('src="/api/uploads/product-detail-images/local/a.webp"');
+    expect(persistedDetailHtml).toContain('alt="ok"');
+
+    await server.close();
+  });
+
   it('persists thumbnailUrl on POST /products and returns it in the response', async () => {
     const actor = buildActor();
     const thumbnailUrl = 'https://assets.kody.test/product-detail/draft/thumb.webp';
@@ -659,6 +737,38 @@ describe('product routes', () => {
     expect(body.ok).toBe(true);
     expect(body.data.detailHtml).toBeNull();
     expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({ detailHtml: null });
+
+    await server.close();
+  });
+
+  it('sanitizes detailHtml on PATCH /products/:id and records the sanitized value in the audit log', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ detailHtml: '<p>Old detail</p>' });
+    const inputDetailHtml = '<p onclick="alert(1)">Updated<img src="javascript:alert(1)" onerror="alert(2)"><img src="https://assets.kody.test/safe.webp" style="width: 100px; behavior: url(x);"></p>';
+    const updated = buildStoredProduct({ detailHtml: '<p>Updated<img src="https://assets.kody.test/safe.webp" style="width: 100px;"></p>' });
+    const prisma = buildPrisma({ actor, products: [product], updatedProduct: updated });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { detailHtml: inputDetailHtml },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const persistedDetailHtml = String(prisma.product.update.mock.calls[0][0].data.detailHtml);
+    expect(persistedDetailHtml).not.toContain('onclick');
+    expect(persistedDetailHtml).not.toContain('onerror');
+    expect(persistedDetailHtml).not.toContain('javascript:');
+    expect(persistedDetailHtml).not.toContain('behavior');
+    expect(persistedDetailHtml).toContain('https://assets.kody.test/safe.webp');
+    expect(persistedDetailHtml).toContain('width: 100px');
+
+    const auditAfter = prisma.actionLog.create.mock.calls[0][0].data.afterJson as { detailHtml: string };
+    expect(auditAfter.detailHtml).toBe(persistedDetailHtml);
+    expect(auditAfter.detailHtml).not.toBe(inputDetailHtml);
 
     await server.close();
   });

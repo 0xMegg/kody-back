@@ -1333,7 +1333,171 @@ function normalizeOptionalHtml(value: unknown, field: string): string | null {
   if (trimmed.length > 200_000) {
     throw new DomainRuleError('VALIDATION_ERROR', `${field} must be 200000 characters or fewer`, 400);
   }
-  return trimmed;
+  const sanitized = sanitizeProductDetailHtml(trimmed);
+  return sanitized === '' ? null : sanitized;
+}
+
+const ALLOWED_DETAIL_HTML_TAGS: ReadonlySet<string> = new Set([
+  'p', 'br', 'strong', 'b', 'span', 'img', 'div', 'ul', 'ol', 'li',
+]);
+const VOID_DETAIL_HTML_TAGS: ReadonlySet<string> = new Set(['br', 'img']);
+const ALLOWED_DETAIL_IMG_ATTRS: ReadonlySet<string> = new Set(['src', 'alt', 'class', 'style']);
+const ALLOWED_DETAIL_DEFAULT_ATTRS: ReadonlySet<string> = new Set(['class', 'style']);
+const ALLOWED_DETAIL_STYLE_PROPS: ReadonlySet<string> = new Set([
+  'text-align', 'font-size', 'width', 'display',
+]);
+
+interface SanitizedAttribute {
+  name: string;
+  value: string;
+}
+
+function sanitizeProductDetailHtml(input: string): string {
+  const out: string[] = [];
+  const stack: string[] = [];
+  const len = input.length;
+  let i = 0;
+
+  while (i < len) {
+    if (input[i] !== '<') {
+      const next = input.indexOf('<', i);
+      out.push(next < 0 ? input.substring(i) : input.substring(i, next));
+      if (next < 0) break;
+      i = next;
+      continue;
+    }
+
+    if (input.startsWith('<!--', i)) {
+      const end = input.indexOf('-->', i + 4);
+      i = end < 0 ? len : end + 3;
+      continue;
+    }
+    if (input[i + 1] === '!' || input[i + 1] === '?') {
+      const end = input.indexOf('>', i);
+      i = end < 0 ? len : end + 1;
+      continue;
+    }
+    if (input[i + 1] === '/') {
+      const closeMatch = /^<\/([a-zA-Z][a-zA-Z0-9]*)[^>]*>/.exec(input.substring(i));
+      if (!closeMatch) {
+        i += 1;
+        continue;
+      }
+      i += closeMatch[0].length;
+      const tag = closeMatch[1].toLowerCase();
+      if (!ALLOWED_DETAIL_HTML_TAGS.has(tag) || VOID_DETAIL_HTML_TAGS.has(tag)) continue;
+      const idx = stack.lastIndexOf(tag);
+      if (idx < 0) continue;
+      while (stack.length > idx) {
+        const popped = stack.pop();
+        if (popped !== undefined) out.push(`</${popped}>`);
+      }
+      continue;
+    }
+
+    const openMatch = /^<([a-zA-Z][a-zA-Z0-9]*)([^>]*?)(\/?)>/.exec(input.substring(i));
+    if (!openMatch) {
+      i += 1;
+      continue;
+    }
+    i += openMatch[0].length;
+    const tag = openMatch[1].toLowerCase();
+    const rawAttrs = openMatch[2];
+    const isVoid = VOID_DETAIL_HTML_TAGS.has(tag);
+    const selfClosed = openMatch[3] === '/' || isVoid;
+
+    if (!ALLOWED_DETAIL_HTML_TAGS.has(tag)) continue;
+
+    const attrs = sanitizeDetailAttributes(tag, rawAttrs);
+    if (tag === 'img') {
+      const src = attrs.find((attr) => attr.name === 'src');
+      if (!src || !isSafeDetailImageUrl(src.value)) continue;
+    }
+
+    const attrText = attrs
+      .map((attr) => ` ${attr.name}="${escapeHtmlAttribute(attr.value)}"`)
+      .join('');
+
+    out.push(`<${tag}${attrText}>`);
+    if (!selfClosed) stack.push(tag);
+  }
+
+  while (stack.length > 0) {
+    const popped = stack.pop();
+    if (popped !== undefined) out.push(`</${popped}>`);
+  }
+
+  return out.join('').trim();
+}
+
+function sanitizeDetailAttributes(tag: string, raw: string): SanitizedAttribute[] {
+  const allowed = tag === 'img' ? ALLOWED_DETAIL_IMG_ATTRS : ALLOWED_DETAIL_DEFAULT_ATTRS;
+  const attrs: SanitizedAttribute[] = [];
+  const seen = new Set<string>();
+  const re = /\s*([^\s=>"'/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw)) !== null) {
+    const name = match[1].toLowerCase();
+    if (name.startsWith('on')) continue;
+    if (!allowed.has(name)) continue;
+    if (seen.has(name)) continue;
+    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    if (name === 'style') {
+      const safeStyle = sanitizeDetailStyle(value);
+      if (!safeStyle) continue;
+      attrs.push({ name, value: safeStyle });
+      seen.add(name);
+      continue;
+    }
+    attrs.push({ name, value });
+    seen.add(name);
+  }
+  return attrs;
+}
+
+function sanitizeDetailStyle(raw: string): string {
+  const decls = raw.split(';');
+  const safe: string[] = [];
+  for (const decl of decls) {
+    const trimmed = decl.trim();
+    if (!trimmed) continue;
+    const colon = trimmed.indexOf(':');
+    if (colon < 0) continue;
+    const prop = trimmed.substring(0, colon).trim().toLowerCase();
+    const value = trimmed.substring(colon + 1).trim();
+    if (!prop || !value) continue;
+    if (!ALLOWED_DETAIL_STYLE_PROPS.has(prop)) continue;
+    if (!isSafeStyleValue(value)) continue;
+    safe.push(`${prop}: ${value};`);
+  }
+  return safe.join(' ');
+}
+
+function isSafeStyleValue(value: string): boolean {
+  if (/[<>"']/.test(value)) return false;
+  if (/url\s*\(/i.test(value)) return false;
+  if (/expression\s*\(/i.test(value)) return false;
+  if (/javascript\s*:/i.test(value)) return false;
+  return true;
+}
+
+function isSafeDetailImageUrl(src: string): boolean {
+  if (src.startsWith('/api/uploads/')) return true;
+  if (!src.startsWith('https://')) return false;
+  try {
+    const url = new URL(src);
+    return url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function normalizeProductThumbnailUrl(value: unknown): string | null {
