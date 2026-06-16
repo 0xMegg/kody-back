@@ -49,7 +49,10 @@ export interface ReplaceUserRolesInput {
 }
 
 export interface UnlockUserInput {
+  actorUserId: string;
   userId: string;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 interface StoredEmployee {
@@ -194,6 +197,24 @@ export class AdminUserService {
         lockedUntil: null,
       },
       include: { employee: true, roles: true },
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'USER_STATUS_CHANGE',
+      targetType: 'User',
+      targetId: input.userId,
+      beforeJson: {
+        failedLoginCount: user.failedLoginCount,
+        lockedUntil: user.lockedUntil,
+      },
+      afterJson: {
+        failedLoginCount: 0,
+        lockedUntil: null,
+      },
+      metadataJson: { reason: 'admin user unlock' },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
     });
 
     return toAdminUserSummary(updatedUser);

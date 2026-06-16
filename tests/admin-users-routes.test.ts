@@ -353,7 +353,7 @@ describe('admin user routes', () => {
     await server.close();
   });
 
-  it('unlocks a locked user without writing an ActionLog', async () => {
+  it('unlocks a locked user and writes an ActionLog with actor attribution', async () => {
     const actor = buildUser({ id: 'admin_1', roles: ['ADMIN'] });
     const target = buildUser({
       id: 'user_1',
@@ -394,6 +394,56 @@ describe('admin user routes', () => {
       },
       include: { employee: true, roles: true },
     });
+    expect(prisma.actionLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: {
+        actorUserId: actor.id,
+        actionType: 'USER_STATUS_CHANGE',
+        targetType: 'User',
+        targetId: target.id,
+        beforeJson: {
+          failedLoginCount: 5,
+          lockedUntil: new Date('2026-05-07T12:00:00.000Z'),
+        },
+        afterJson: {
+          failedLoginCount: 0,
+          lockedUntil: null,
+        },
+        metadataJson: { reason: 'admin user unlock', requestId: expect.any(String) },
+        ipAddress: '127.0.0.1',
+        userAgent: 'lightMyRequest',
+      },
+    });
+
+    await server.close();
+  });
+
+  it('does not log when unlock is a no-op', async () => {
+    const actor = buildUser({ id: 'admin_1', roles: ['ADMIN'] });
+    const target = buildUser({
+      id: 'user_1',
+      roles: ['SALES'],
+      failedLoginCount: 0,
+      lockedUntil: null,
+    });
+    const prisma = buildPrisma({ actor, target });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/users/${target.id}/unlock`,
+      headers: {
+        authorization: `Bearer ${issueToken(actor.id, actor.roles)}`,
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.failedLoginCount).toBe(0);
+    expect(body.data.lockedUntil).toBeNull();
+    expect(prisma.user.update).not.toHaveBeenCalled();
     expect(prisma.actionLog.create).not.toHaveBeenCalled();
 
     await server.close();
@@ -487,7 +537,7 @@ describe('admin user routes', () => {
     await server.close();
   });
 
-  it('allows FINANCE to unlock a locked user without writing an ActionLog', async () => {
+  it('allows FINANCE to unlock a locked user and writes an ActionLog', async () => {
     const actor = buildUser({ id: 'finance_1', roles: ['FINANCE'] });
     const target = buildUser({
       id: 'user_1',
@@ -528,7 +578,18 @@ describe('admin user routes', () => {
       },
       include: { employee: true, roles: true },
     });
-    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          actorUserId: actor.id,
+          actionType: 'USER_STATUS_CHANGE',
+          targetType: 'User',
+          targetId: target.id,
+          beforeJson: expect.objectContaining({ failedLoginCount: 5 }),
+          afterJson: { failedLoginCount: 0, lockedUntil: null },
+        }),
+      }),
+    );
 
     await server.close();
   });

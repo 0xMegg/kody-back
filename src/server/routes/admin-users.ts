@@ -80,7 +80,10 @@ export function registerAdminUserRoutes(server: FastifyInstance): void {
     { preHandler: requirePermission({ resource: 'userAdmin', action: 'write' }) },
     async (request, reply) => {
       const result = await server.services.adminUsers.unlockUser({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
         userId: parseUserId(request.params),
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
       });
 
       reply.status(200);
