@@ -95,6 +95,20 @@ describe('admin employee routes', () => {
       },
       include: { user: { select: { id: true } } },
     });
+    expect(prisma.actionLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: {
+        actorUserId: actor.id,
+        actionType: 'USER_STATUS_CHANGE',
+        targetType: 'Employee',
+        targetId: created.id,
+        beforeJson: { status: null },
+        afterJson: { status: 'ACTIVE' },
+        metadataJson: { event: 'EMPLOYEE_CREATE', requestId: expect.any(String) },
+        ipAddress: '127.0.0.1',
+        userAgent: 'lightMyRequest',
+      },
+    });
 
     await server.close();
   });
@@ -123,6 +137,19 @@ describe('admin employee routes', () => {
       where: { id: employee.id },
       data: { status: 'INACTIVE', leftAt: new Date('2026-05-29T00:00:00.000Z') },
       include: { user: { select: { id: true } } },
+    });
+    expect(prisma.actionLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: {
+        actorUserId: actor.id,
+        actionType: 'USER_STATUS_CHANGE',
+        targetType: 'Employee',
+        targetId: employee.id,
+        afterJson: { status: 'INACTIVE', leftAt: '2026-05-29T00:00:00.000Z' },
+        metadataJson: { requestId: expect.any(String) },
+        ipAddress: '127.0.0.1',
+        userAgent: 'lightMyRequest',
+      },
     });
 
     await server.close();

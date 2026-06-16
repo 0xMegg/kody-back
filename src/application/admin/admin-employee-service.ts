@@ -1,5 +1,6 @@
 import { DomainRuleError } from '@/domain/shared/errors.js';
 import type { EmployeeStatus } from '@/domain/shared/types.js';
+import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 
 export interface AdminEmployeeSummary {
   id: string;
@@ -17,18 +18,24 @@ export interface AdminEmployeeSummary {
 }
 
 export interface CreateEmployeeInput {
+  actorUserId: string;
   name: string;
   email: string;
   phone?: string | null;
   department?: string | null;
   position?: string | null;
   joinedAt?: Date | null;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface UpdateEmployeeStatusInput {
+  actorUserId: string;
   employeeId: string;
   status: EmployeeStatus;
   leftAt?: Date | null;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 interface StoredEmployee {
@@ -73,7 +80,10 @@ interface EmployeeRepository {
 }
 
 export class AdminEmployeeService {
-  constructor(private readonly repository: EmployeeRepository) {}
+  constructor(
+    private readonly repository: EmployeeRepository,
+    private readonly actionLogWriter: ActionLogWriter,
+  ) {}
 
   async listEmployees(): Promise<AdminEmployeeSummary[]> {
     const employees = await this.repository.employee.findMany({
@@ -109,6 +119,18 @@ export class AdminEmployeeService {
       include: { user: { select: { id: true } } },
     });
 
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'USER_STATUS_CHANGE',
+      targetType: 'Employee',
+      targetId: employee.id,
+      beforeJson: { status: null },
+      afterJson: { status: employee.status },
+      metadataJson: { event: 'EMPLOYEE_CREATE' },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+
     return toAdminEmployeeSummary(employee);
   }
 
@@ -120,6 +142,19 @@ export class AdminEmployeeService {
         ...(input.leftAt !== undefined && { leftAt: input.leftAt }),
       },
       include: { user: { select: { id: true } } },
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'USER_STATUS_CHANGE',
+      targetType: 'Employee',
+      targetId: input.employeeId,
+      afterJson: {
+        status: employee.status,
+        ...(employee.leftAt !== undefined && { leftAt: employee.leftAt?.toISOString() ?? null }),
+      },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
     });
 
     return toAdminEmployeeSummary(employee);

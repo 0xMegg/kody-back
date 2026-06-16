@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { EmployeeStatus } from '@/domain/shared/types.js';
 import { successResponse, ValidationError } from '../api/index.js';
-import { requirePermission } from '../auth/guards.js';
+import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
 
 interface CreateEmployeeBody {
   name: string;
@@ -34,7 +34,12 @@ export function registerAdminEmployeeRoutes(server: FastifyInstance): void {
     { preHandler: requirePermission({ resource: 'userAdmin', action: 'write' }) },
     async (request, reply) => {
       const body = parseCreateEmployeeBody(request.body);
-      const result = await server.services.adminEmployees.createEmployee(body);
+      const result = await server.services.adminEmployees.createEmployee({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
+        ...body,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
 
       reply.status(201);
       return successResponse(result);
@@ -47,9 +52,12 @@ export function registerAdminEmployeeRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const body = parseStatusBody(request.body);
       const result = await server.services.adminEmployees.updateStatus({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
         employeeId: parseEmployeeId(request.params),
         status: body.status,
         ...(body.leftAt !== undefined && { leftAt: body.leftAt }),
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
       });
 
       reply.status(200);
