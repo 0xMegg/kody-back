@@ -174,7 +174,7 @@ describe('order routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: `/orders/${ORDER_ID}/suspend`,
-      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}`, 'user-agent': 'order-route-test' },
     });
 
     expect(response.statusCode).toBe(200);
@@ -184,12 +184,21 @@ describe('order routes', () => {
       data: { orderBasedStock: { increment: 2 } },
     });
     expect(prisma.actionLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ actionType: 'ORDER_CANCEL', targetId: ORDER_ID }),
+      data: expect.objectContaining({
+        actionType: 'ORDER_CANCEL',
+        actorUserId: actor.id,
+        targetType: 'Order',
+        targetId: ORDER_ID,
+        beforeJson: expect.objectContaining({ status: 'CONFIRMED' }),
+        afterJson: expect.objectContaining({ id: ORDER_ID, status: 'SUSPENDED' }),
+        ipAddress: expect.any(String),
+        userAgent: 'order-route-test',
+      }),
     });
     await server.close();
   });
 
-  it('suspends a PENDING order without stock change', async () => {
+  it('suspends a PENDING order without stock change and logs prior status in beforeJson', async () => {
     const actor = buildActor({ roles: ['SALES'] });
     const prisma = buildPrisma({ actor, orders: [buildStoredOrder({ status: 'PENDING' })] });
     const server = buildTestServer(prisma);
@@ -198,13 +207,58 @@ describe('order routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: `/orders/${ORDER_ID}/suspend`,
-      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}`, 'user-agent': 'order-route-test' },
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data.status).toBe('SUSPENDED');
     expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actionType: 'ORDER_CANCEL',
+        actorUserId: actor.id,
+        targetType: 'Order',
+        targetId: ORDER_ID,
+        beforeJson: expect.objectContaining({ status: 'PENDING' }),
+        afterJson: expect.objectContaining({ id: ORDER_ID, status: 'SUSPENDED' }),
+        ipAddress: expect.any(String),
+        userAgent: 'order-route-test',
+      }),
+    });
     await server.close();
+  });
+
+  it('does not write ORDER_CANCEL ActionLog for unauthorized or failed suspend attempts', async () => {
+    const warehouseActor = buildActor({ roles: ['WAREHOUSE'] });
+    const unauthorizedPrisma = buildPrisma({ actor: warehouseActor, orders: [buildStoredOrder({ status: 'PENDING' })] });
+    const unauthorizedServer = buildTestServer(unauthorizedPrisma);
+    await unauthorizedServer.ready();
+
+    const unauthorized = await unauthorizedServer.inject({
+      method: 'POST',
+      url: `/orders/${ORDER_ID}/suspend`,
+      headers: { authorization: `Bearer ${issueToken(warehouseActor.id, warehouseActor.roles)}` },
+    });
+
+    expect(unauthorized.statusCode).toBe(403);
+    expect(unauthorizedPrisma.actionLog.create).not.toHaveBeenCalled();
+    await unauthorizedServer.close();
+
+    const salesActor = buildActor({ roles: ['SALES'] });
+    const failedPrisma = buildPrisma({ actor: salesActor, orders: [buildStoredOrder({ status: 'SUSPENDED' })] });
+    const failedServer = buildTestServer(failedPrisma);
+    await failedServer.ready();
+
+    const failed = await failedServer.inject({
+      method: 'POST',
+      url: `/orders/${ORDER_ID}/suspend`,
+      headers: { authorization: `Bearer ${issueToken(salesActor.id, salesActor.roles)}` },
+    });
+
+    expect(failed.statusCode).toBe(400);
+    expect(failed.json().error.code).toBe('ORDER_STATUS_INVALID');
+    expect(failedPrisma.actionLog.create).not.toHaveBeenCalled();
+    await failedServer.close();
   });
 
   it('uses conditional status updates before stock mutation for confirm and suspend', async () => {

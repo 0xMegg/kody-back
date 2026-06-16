@@ -279,7 +279,7 @@ export class OrderService {
   }
 
   async suspendOrder(input: TransitionOrderInput): Promise<OrderSummary> {
-    const updated = await this.repository.$transaction(async (tx) => {
+    const { updated, beforeJson } = await this.repository.$transaction(async (tx) => {
       const orderId = normalizeRequiredString(input.orderId, 'orderId');
       const confirmedTransition = await tx.order.updateMany({
         where: { id: orderId, status: 'CONFIRMED' },
@@ -293,7 +293,7 @@ export class OrderService {
             data: { orderBasedStock: { increment: item.quantity } },
           });
         }
-        return current;
+        return { updated: current, beforeJson: { status: 'CONFIRMED' } };
       }
 
       const pendingTransition = await tx.order.updateMany({
@@ -301,7 +301,7 @@ export class OrderService {
         data: { status: 'SUSPENDED' },
       });
       if (pendingTransition.count === 1) {
-        return findOrder(tx, orderId);
+        return { updated: await findOrder(tx, orderId), beforeJson: { status: 'PENDING' } };
       }
 
       throw new DomainRuleError('ORDER_STATUS_INVALID', 'Only PENDING or CONFIRMED orders can be suspended', 400);
@@ -312,6 +312,7 @@ export class OrderService {
       actionType: 'ORDER_CANCEL',
       targetType: 'Order',
       targetId: updated.id,
+      beforeJson,
       afterJson: toOrderAuditPayload(updated),
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
