@@ -17,6 +17,36 @@ export function registerShipmentRoutes(server: FastifyInstance): void {
       return successResponse(result);
     },
   );
+
+  server.post(
+    '/shipments/:id/pack',
+    { preHandler: requirePermission({ resource: 'shipment', action: 'execute' }) },
+    async (request, reply) => {
+      const result = await server.services.shipments.packShipment({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
+        shipmentId: parseShipmentId(request.params),
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
+  server.post(
+    '/shipments/:id/complete',
+    { preHandler: requirePermission({ resource: 'shipment', action: 'execute' }) },
+    async (request, reply) => {
+      const result = await server.services.shipments.completeShipment({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
+        shipmentId: parseShipmentId(request.params),
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
 }
 
 function parseShipmentId(params: unknown): string {

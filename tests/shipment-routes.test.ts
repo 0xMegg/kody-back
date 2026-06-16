@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ShipmentService } from '@/application/shipment/shipment-service.js';
+import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 import { issueAccessToken } from '@/domain/auth/tokens.js';
 import type { Incoterm, Role, ShipmentStatus, UserStatus } from '@/domain/shared/types.js';
 import { buildTestServer as _buildTestServer } from './helpers.js';
@@ -77,6 +79,247 @@ describe('shipment routes', () => {
     await server.close();
   });
 
+  it('packs a shipment and writes exactly one SHIPMENT_PACK action log with resulting packed state', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, itemShipmentStatus: 'PENDING', orderId: ORDER_ID });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/pack`,
+      headers: {
+        authorization: `Bearer ${issueToken(actor.id, actor.roles)}`,
+        'user-agent': 'shipment-test-agent',
+      },
+      remoteAddress: '203.0.113.10',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.shipmentEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ shipmentId: SHIPMENT_ID, eventType: 'PACKED', actorUserId: actor.id }),
+    });
+    expect(prisma.actionLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'SHIPMENT_PACK',
+        targetType: 'Shipment',
+        targetId: SHIPMENT_ID,
+        ipAddress: '203.0.113.10',
+        userAgent: 'shipment-test-agent',
+        afterJson: {
+          shipmentId: SHIPMENT_ID,
+          orderId: ORDER_ID,
+          status: 'PENDING',
+          itemCount: 1,
+          itemShipmentStatuses: ['PENDING'],
+        },
+        metadataJson: {
+          operation: 'PACKED',
+          resultingState: 'PACKED',
+          shipmentEventType: 'PACKED',
+        },
+      }),
+    });
+    await server.close();
+  });
+
+  it('completes a shipment and writes exactly one SHIPMENT_COMPLETE action log with before and after state', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, itemShipmentStatus: 'PENDING', orderId: ORDER_ID });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/complete`,
+      headers: {
+        authorization: `Bearer ${issueToken(actor.id, actor.roles)}`,
+        'user-agent': 'shipment-test-agent',
+      },
+      remoteAddress: '203.0.113.20',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.orderItem.update).toHaveBeenCalledWith({ where: { id: ORDER_ITEM_ID }, data: { shipmentStatus: 'COMPLETED' } });
+    expect(prisma.shipment.update).toHaveBeenCalledWith({
+      where: { id: SHIPMENT_ID },
+      data: { status: 'COMPLETED' },
+      include: { items: { include: { orderItem: true, stockMovements: true } } },
+    });
+    expect(prisma.shipmentEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ shipmentId: SHIPMENT_ID, eventType: 'COMPLETED', actorUserId: actor.id }),
+    });
+    expect(prisma.actionLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'SHIPMENT_COMPLETE',
+        targetType: 'Shipment',
+        targetId: SHIPMENT_ID,
+        ipAddress: '203.0.113.20',
+        userAgent: 'shipment-test-agent',
+        beforeJson: {
+          shipmentId: SHIPMENT_ID,
+          orderId: ORDER_ID,
+          status: 'PENDING',
+          itemCount: 1,
+          itemShipmentStatuses: ['PENDING'],
+        },
+        afterJson: {
+          shipmentId: SHIPMENT_ID,
+          orderId: ORDER_ID,
+          status: 'COMPLETED',
+          itemCount: 1,
+          itemShipmentStatuses: ['COMPLETED'],
+        },
+        metadataJson: {
+          operation: 'COMPLETED',
+          shipmentEventType: 'COMPLETED',
+          transition: {
+            shipmentStatus: { from: 'PENDING', to: 'COMPLETED' },
+            itemShipmentStatuses: { from: ['PENDING'], to: ['COMPLETED'] },
+          },
+        },
+      }),
+    });
+    await server.close();
+  });
+
+  it('passes provided ipAddress and userAgent through the shipment complete service action log', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, itemShipmentStatus: 'PENDING', orderId: ORDER_ID });
+    const actionLogWriter = { write: vi.fn(async () => undefined) };
+    const service = new ShipmentService(prisma, actionLogWriter as unknown as ActionLogWriter);
+
+    await service.completeShipment({
+      actorUserId: actor.id,
+      shipmentId: SHIPMENT_ID,
+      ipAddress: '198.51.100.42',
+      userAgent: 'shipment-service-test-agent',
+    });
+
+    expect(actionLogWriter.write).toHaveBeenCalledTimes(1);
+    expect(actionLogWriter.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'SHIPMENT_COMPLETE',
+        targetType: 'Shipment',
+        targetId: SHIPMENT_ID,
+        ipAddress: '198.51.100.42',
+        userAgent: 'shipment-service-test-agent',
+        afterJson: {
+          shipmentId: SHIPMENT_ID,
+          orderId: ORDER_ID,
+          status: 'COMPLETED',
+          itemCount: 1,
+          itemShipmentStatuses: ['COMPLETED'],
+        },
+      }),
+    );
+  });
+
+  it('does not write action logs for failed or unauthorized shipment pack and complete attempts', async () => {
+    const actor = buildActor({ roles: ['OPERATIONS'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, itemShipmentStatus: 'PENDING', orderId: ORDER_ID });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const unauthorizedPack = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/pack`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const unauthorizedComplete = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/complete`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(unauthorizedPack.statusCode).toBe(403);
+    expect(unauthorizedComplete.statusCode).toBe(403);
+    expect(prisma.shipmentEvent.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('rejects shipment pack for a missing shipment without writing an action log', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, missingShipment: true });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/pack`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe('SHIPMENT_NOT_FOUND');
+    expect(prisma.shipmentEvent.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('rejects shipment pack for a shipment with unallocated items without writing a SHIPMENT_PACK action log', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, itemShipmentStatus: 'NOT_SHIPPED', orderId: ORDER_ID });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/pack`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('SHIPMENT_NOT_PACKED');
+    expect(prisma.shipmentEvent.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('rejects shipment complete for a missing shipment without writing a SHIPMENT_COMPLETE action log', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, missingShipment: true });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/complete`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe('SHIPMENT_NOT_FOUND');
+    expect(prisma.shipmentEvent.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('rejects shipment complete for a shipment with unallocated items without writing a SHIPMENT_COMPLETE action log', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({ actor, stockOnHand: 5, itemShipmentStatus: 'NOT_SHIPPED', orderId: ORDER_ID });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/complete`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('SHIPMENT_NOT_PACKED');
+    expect(prisma.shipmentEvent.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+    await server.close();
+  });
+
   it('rejects allocation when stock is insufficient and leaves shipment items untouched', async () => {
     const actor = buildActor({ roles: ['WAREHOUSE'] });
     const prisma = buildPrisma({ actor, stockOnHand: 1 });
@@ -148,6 +391,7 @@ function buildPrisma(options: {
   stockOnHand: number;
   orderId?: string | null;
   itemShipmentStatus?: 'NOT_SHIPPED' | 'PENDING' | 'COMPLETED';
+  missingShipment?: boolean;
 }) {
   const actor = options.actor;
   const shipment = buildShipment({ orderId: options.orderId, itemShipmentStatus: options.itemShipmentStatus });
@@ -175,8 +419,8 @@ function buildPrisma(options: {
       ),
     },
     shipment: {
-      findUnique: vi.fn(async () => shipment),
-      update: vi.fn(async ({ data }: { data: { orderId?: string } }) => {
+      findUnique: vi.fn(async () => (options.missingShipment ? null : shipment)),
+      update: vi.fn(async ({ data }: { data: { orderId?: string; status?: ShipmentStatus } }) => {
         Object.assign(shipment, data, { updatedAt: new Date('2024-03-15T01:00:00.000Z') });
         return shipment;
       }),
@@ -186,7 +430,7 @@ function buildPrisma(options: {
       update: vi.fn(async () => ({ id: PRODUCT_ID, stockOnHand: options.stockOnHand - 2, shipmentBasedStock: options.stockOnHand - 2 })),
     },
     orderItem: {
-      update: vi.fn(async ({ data }: { data: { shipmentStatus: 'PENDING' } }) => {
+      update: vi.fn(async ({ data }: { data: { shipmentStatus: 'PENDING' | 'COMPLETED' } }) => {
         shipment.items[0].orderItem.shipmentStatus = data.shipmentStatus;
         return shipment.items[0].orderItem;
       }),

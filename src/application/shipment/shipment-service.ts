@@ -2,12 +2,16 @@ import { DomainRuleError } from '@/domain/shared/errors.js';
 import type { Incoterm, ShipmentStatus } from '@/domain/shared/types.js';
 import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 
-export interface AllocateShipmentInput {
+export interface ShipmentMutationInput {
   actorUserId: string;
   shipmentId: string;
   ipAddress?: string;
   userAgent?: string;
 }
+
+export type AllocateShipmentInput = ShipmentMutationInput;
+export type PackShipmentInput = ShipmentMutationInput;
+export type CompleteShipmentInput = ShipmentMutationInput;
 
 export interface ShipmentItemSummary {
   id: string;
@@ -206,6 +210,92 @@ export class ShipmentService {
 
     return toShipmentSummary(result.shipment);
   }
+
+  async packShipment(input: PackShipmentInput): Promise<ShipmentSummary> {
+    const shipmentId = normalizeRequiredString(input.shipmentId, 'shipmentId');
+
+    const shipment = await this.repository.$transaction(async (tx) => {
+      const current = await findShipment(tx, shipmentId);
+      ensureShipmentHasItems(current);
+      ensureShipmentAllocated(current);
+
+      await tx.shipmentEvent.create({
+        data: {
+          shipmentId: current.id,
+          eventType: 'PACKED',
+          actorUserId: input.actorUserId,
+          metadataJson: { orderId: current.orderId, itemCount: (current.items ?? []).length },
+        },
+      });
+
+      return current;
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'SHIPMENT_PACK',
+      targetType: 'Shipment',
+      targetId: shipment.id,
+      afterJson: buildShipmentActionStateJson(shipment),
+      metadataJson: {
+        operation: 'PACKED',
+        resultingState: 'PACKED',
+        shipmentEventType: 'PACKED',
+      },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+
+    return toShipmentSummary(shipment);
+  }
+
+  async completeShipment(input: CompleteShipmentInput): Promise<ShipmentSummary> {
+    const shipmentId = normalizeRequiredString(input.shipmentId, 'shipmentId');
+
+    const result = await this.repository.$transaction(async (tx) => {
+      const current = await findShipment(tx, shipmentId);
+      ensureShipmentHasItems(current);
+      ensureShipmentAllocated(current);
+
+      const items = current.items ?? [];
+      const beforeJson = buildShipmentActionStateJson(current);
+      for (const item of items) {
+        if (!item.orderItem) {
+          throw new DomainRuleError('ORDER_ITEM_NOT_FOUND', 'Shipment item is missing its order item', 400);
+        }
+        if (item.orderItem.shipmentStatus !== 'COMPLETED') {
+          await tx.orderItem.update({ where: { id: item.orderItemId }, data: { shipmentStatus: 'COMPLETED' } });
+        }
+      }
+
+      await tx.shipmentEvent.create({
+        data: {
+          shipmentId: current.id,
+          eventType: 'COMPLETED',
+          actorUserId: input.actorUserId,
+          metadataJson: { orderId: current.orderId, itemCount: items.length },
+        },
+      });
+
+      const persisted = current.status === 'COMPLETED' ? current : await updateShipmentStatus(tx, current.id, 'COMPLETED');
+      return { beforeJson, shipment: persisted };
+    });
+
+    const afterJson = buildShipmentActionStateJson(result.shipment);
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'SHIPMENT_COMPLETE',
+      targetType: 'Shipment',
+      targetId: result.shipment.id,
+      beforeJson: result.beforeJson,
+      afterJson,
+      metadataJson: buildShipmentCompleteMetadataJson(result.beforeJson, afterJson),
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+
+    return toShipmentSummary(result.shipment);
+  }
 }
 
 async function findShipment(repository: ShipmentRepository, shipmentId: string): Promise<StoredShipment> {
@@ -225,6 +315,56 @@ async function updateShipmentOrder(repository: ShipmentRepository, shipmentId: s
     data: { orderId },
     include: { items: { include: { orderItem: true, stockMovements: true } } },
   });
+}
+
+async function updateShipmentStatus(
+  repository: ShipmentRepository,
+  shipmentId: string,
+  status: ShipmentStatus,
+): Promise<StoredShipment> {
+  return repository.shipment.update({
+    where: { id: shipmentId },
+    data: { status },
+    include: { items: { include: { orderItem: true, stockMovements: true } } },
+  });
+}
+
+function ensureShipmentHasItems(shipment: StoredShipment): void {
+  if ((shipment.items ?? []).length === 0) {
+    throw new DomainRuleError('SHIPMENT_EMPTY', 'Shipment must contain at least one item', 400);
+  }
+}
+
+function ensureShipmentAllocated(shipment: StoredShipment): void {
+  const hasUnallocatedItem = (shipment.items ?? []).some((item) => item.orderItem?.shipmentStatus === 'NOT_SHIPPED');
+  if (hasUnallocatedItem) {
+    throw new DomainRuleError('SHIPMENT_NOT_PACKED', 'Shipment must be allocated before pack or complete', 400);
+  }
+}
+
+function buildShipmentActionStateJson(shipment: StoredShipment) {
+  const items = shipment.items ?? [];
+  return {
+    shipmentId: shipment.id,
+    orderId: shipment.orderId,
+    status: shipment.status,
+    itemCount: items.length,
+    itemShipmentStatuses: items.map((item) => item.orderItem?.shipmentStatus ?? null),
+  };
+}
+
+function buildShipmentCompleteMetadataJson(
+  beforeJson: ReturnType<typeof buildShipmentActionStateJson>,
+  afterJson: ReturnType<typeof buildShipmentActionStateJson>,
+) {
+  return {
+    operation: 'COMPLETED',
+    shipmentEventType: 'COMPLETED',
+    transition: {
+      shipmentStatus: { from: beforeJson.status, to: afterJson.status },
+      itemShipmentStatuses: { from: beforeJson.itemShipmentStatuses, to: afterJson.itemShipmentStatuses },
+    },
+  };
 }
 
 async function lockProduct(repository: ShipmentRepository, productId: string): Promise<void> {
