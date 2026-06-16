@@ -1,4 +1,5 @@
 import type { ActionType } from '@/domain/shared/types.js';
+import { getRequestContext } from '@/server/request-context.js';
 
 export interface ActionLogWriteInput {
   actorUserId: string;
@@ -20,6 +21,14 @@ export class ActionLogWriter {
   constructor(private readonly repository: ActionLogRepository) {}
 
   async write(input: ActionLogWriteInput): Promise<void> {
-    await this.repository.create({ data: input });
+    const requestId = getRequestContext()?.requestId;
+    const data = requestId === undefined
+      ? input
+      : {
+          ...input,
+          metadataJson: { ...input.metadataJson, requestId },
+        };
+
+    await this.repository.create({ data });
   }
 }

@@ -115,11 +115,12 @@ describe('shipment routes', () => {
           itemCount: 1,
           itemShipmentStatuses: ['PENDING'],
         },
-        metadataJson: {
+        metadataJson: expect.objectContaining({
           operation: 'PACKED',
           resultingState: 'PACKED',
           shipmentEventType: 'PACKED',
-        },
+          requestId: expect.any(String),
+        }),
       }),
     });
     await server.close();
@@ -174,14 +175,15 @@ describe('shipment routes', () => {
           itemCount: 1,
           itemShipmentStatuses: ['COMPLETED'],
         },
-        metadataJson: {
+        metadataJson: expect.objectContaining({
           operation: 'COMPLETED',
           shipmentEventType: 'COMPLETED',
           transition: {
             shipmentStatus: { from: 'PENDING', to: 'COMPLETED' },
             itemShipmentStatuses: { from: ['PENDING'], to: ['COMPLETED'] },
           },
-        },
+          requestId: expect.any(String),
+        }),
       }),
     });
     await server.close();

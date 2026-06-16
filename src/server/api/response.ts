@@ -11,6 +11,7 @@ export interface ApiSuccessResponse<T> {
 
 export interface ApiErrorResponse {
   ok: false;
+  requestId?: string;
   error: {
     code: string;
     message: string;
@@ -32,8 +33,13 @@ export function errorResponse(
   code: string,
   message: string,
   details?: unknown,
+  requestId?: string,
 ): ApiErrorResponse {
-  return { ok: false, error: { code, message, ...(details !== undefined && { details }) } };
+  return {
+    ok: false,
+    ...(requestId !== undefined && { requestId }),
+    error: { code, message, ...(details !== undefined && { details }) },
+  };
 }
 
 export function paginatedResponse<T>(
