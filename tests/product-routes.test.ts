@@ -177,6 +177,86 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('persists thumbnailUrl on POST /products and returns it in the response', async () => {
+    const actor = buildActor();
+    const thumbnailUrl = 'https://assets.kody.test/product-detail/draft/thumb.webp';
+    const product = buildStoredProduct({ id: 'KODY-PROD-000020', thumbnailUrl });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 20,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ thumbnailUrl }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.data.thumbnailUrl).toBe(thumbnailUrl);
+    expect(prisma.product.create.mock.calls[0][0].data).toMatchObject({ thumbnailUrl });
+
+    await server.close();
+  });
+
+  it('accepts a local /api/uploads/product-detail-images thumbnailUrl on POST /products', async () => {
+    const actor = buildActor();
+    const thumbnailUrl = '/api/uploads/product-detail-images/local/product-detail%2Fdraft%2Fthumb.webp';
+    const product = buildStoredProduct({ id: 'KODY-PROD-000021', thumbnailUrl });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 21,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ thumbnailUrl }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.data.thumbnailUrl).toBe(thumbnailUrl);
+    expect(prisma.product.create.mock.calls[0][0].data).toMatchObject({ thumbnailUrl });
+
+    await server.close();
+  });
+
+  it('rejects unsafe javascript: thumbnailUrl on POST /products', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ thumbnailUrl: 'javascript:alert(1)' }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('creates product with initialStockOnHand and writes one initial inbound movement atomically', async () => {
     const actor = buildActor();
     const product = buildStoredProduct({ id: 'KODY-PROD-000011', stockOnHand: 12, orderBasedStock: 12, shipmentBasedStock: 12 });
@@ -579,6 +659,83 @@ describe('product routes', () => {
     expect(body.ok).toBe(true);
     expect(body.data.detailHtml).toBeNull();
     expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({ detailHtml: null });
+
+    await server.close();
+  });
+
+  it('updates thumbnailUrl on PATCH /products/:id and writes audit before/after', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ thumbnailUrl: 'https://assets.kody.test/product-detail/old/thumb.webp' });
+    const nextThumbnailUrl = 'https://assets.kody.test/product-detail/new/thumb.webp';
+    const updated = buildStoredProduct({ thumbnailUrl: nextThumbnailUrl });
+    const prisma = buildPrisma({ actor, products: [product], updatedProduct: updated });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { thumbnailUrl: nextThumbnailUrl },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.thumbnailUrl).toBe(nextThumbnailUrl);
+    expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({ thumbnailUrl: nextThumbnailUrl });
+    expect(prisma.actionLog.create.mock.calls[0][0].data).toMatchObject({
+      actionType: 'PRODUCT_UPDATE',
+      beforeJson: { thumbnailUrl: 'https://assets.kody.test/product-detail/old/thumb.webp' },
+      afterJson: { thumbnailUrl: nextThumbnailUrl },
+    });
+
+    await server.close();
+  });
+
+  it('clears thumbnailUrl on PATCH /products/:id when null is sent', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ thumbnailUrl: 'https://assets.kody.test/product-detail/old/thumb.webp' });
+    const updated = buildStoredProduct({ thumbnailUrl: null });
+    const prisma = buildPrisma({ actor, products: [product], updatedProduct: updated });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { thumbnailUrl: null },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.thumbnailUrl).toBeNull();
+    expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({ thumbnailUrl: null });
+
+    await server.close();
+  });
+
+  it('rejects unsafe javascript: thumbnailUrl on PATCH /products/:id', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ thumbnailUrl: null });
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { thumbnailUrl: 'javascript:alert(1)' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.product.update).not.toHaveBeenCalled();
 
     await server.close();
   });

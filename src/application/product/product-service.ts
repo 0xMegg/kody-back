@@ -121,6 +121,7 @@ export interface CreateProductInput {
   category?: ProductCategory;
   name: string;
   labelName?: string | null;
+  thumbnailUrl?: string | null;
   detailHtml?: string | null;
   releaseDateText?: string | null;
   weightG?: number;
@@ -159,6 +160,7 @@ export interface UpdateProductInput {
   category?: ProductCategory | null;
   name?: string;
   labelName?: string | null;
+  thumbnailUrl?: string | null;
   detailHtml?: string | null;
   releaseDateText?: string | null;
   weightG?: number | null;
@@ -422,6 +424,12 @@ export class ProductService {
     const name = normalizeRequiredString(input.name, 'name');
     const labelName =
       input.labelName === undefined ? undefined : input.labelName === null ? null : normalizeOptionalString(input.labelName) ?? null;
+    const thumbnailUrl =
+      input.thumbnailUrl === undefined
+        ? undefined
+        : input.thumbnailUrl === null
+          ? null
+          : normalizeProductThumbnailUrl(input.thumbnailUrl);
     const detailHtml =
       input.detailHtml === undefined ? undefined : input.detailHtml === null ? null : normalizeOptionalHtml(input.detailHtml, 'detailHtml');
     const releaseDateText =
@@ -479,6 +487,7 @@ export class ProductService {
       ...(category !== undefined ? { category } : {}),
       name,
       ...(labelName !== undefined ? { labelName } : {}),
+      ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
       ...(detailHtml !== undefined ? { detailHtml } : {}),
       ...(releaseDateText !== undefined ? { releaseDateText, releaseDate } : {}),
       ...(weightG !== undefined ? { weightG } : {}),
@@ -827,6 +836,16 @@ export class ProductService {
         changes.labelName = labelName;
         beforeJson.labelName = current.labelName;
         afterJson.labelName = labelName;
+      }
+    }
+
+    if (input.thumbnailUrl !== undefined) {
+      const thumbnailUrl =
+        input.thumbnailUrl === null ? null : normalizeProductThumbnailUrl(input.thumbnailUrl);
+      if (thumbnailUrl !== current.thumbnailUrl) {
+        changes.thumbnailUrl = thumbnailUrl;
+        beforeJson.thumbnailUrl = current.thumbnailUrl;
+        afterJson.thumbnailUrl = thumbnailUrl;
       }
     }
 
@@ -1315,6 +1334,32 @@ function normalizeOptionalHtml(value: unknown, field: string): string | null {
     throw new DomainRuleError('VALIDATION_ERROR', `${field} must be 200000 characters or fewer`, 400);
   }
   return trimmed;
+}
+
+function normalizeProductThumbnailUrl(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    throw new DomainRuleError('VALIDATION_ERROR', 'thumbnailUrl must be a string', 400);
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  if (trimmed.length > 2048) {
+    throw new DomainRuleError('VALIDATION_ERROR', 'thumbnailUrl must be 2048 characters or fewer', 400);
+  }
+  if (trimmed.startsWith('/api/uploads/product-detail-images/')) {
+    return trimmed;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new DomainRuleError('VALIDATION_ERROR', 'thumbnailUrl must be a valid URL', 400);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new DomainRuleError('VALIDATION_ERROR', 'thumbnailUrl must use http or https', 400);
+  }
+  return parsed.toString();
 }
 
 function isPresentString(value: string | null): value is string {

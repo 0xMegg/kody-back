@@ -294,6 +294,10 @@ function parseCreateBody(body: unknown): CreateBody {
     result.labelName = body.labelName === null ? null : parseRequiredString(body.labelName, 'labelName');
   }
 
+  if (body.thumbnailUrl !== undefined) {
+    result.thumbnailUrl = body.thumbnailUrl === null ? null : parseString(body.thumbnailUrl, 'thumbnailUrl');
+  }
+
   if (body.detailHtml !== undefined) {
     result.detailHtml = body.detailHtml === null ? null : parseString(body.detailHtml, 'detailHtml');
   }
@@ -374,6 +378,10 @@ function parseUpdateBody(body: unknown): UpdateBody {
 
   if (body.labelName !== undefined) {
     result.labelName = body.labelName === null ? null : parseRequiredString(body.labelName, 'labelName');
+  }
+
+  if (body.thumbnailUrl !== undefined) {
+    result.thumbnailUrl = body.thumbnailUrl === null ? null : parseString(body.thumbnailUrl, 'thumbnailUrl');
   }
 
   if (body.detailHtml !== undefined) {
