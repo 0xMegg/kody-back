@@ -416,6 +416,41 @@ describe('logs routes', () => {
     await server.close();
   });
 
+  it('accepts every later-module actionType written by product and payment services', async () => {
+    const actor = buildActor({ id: 'admin_1', roles: ['ADMIN'] });
+    const prisma = buildPrisma({ actor, items: [], total: 0 });
+    const server = buildTestServer(prisma);
+    await server.ready();
+    const laterModuleActionTypes: ActionType[] = [
+      'PRODUCT_CREATE',
+      'PRODUCT_UPDATE',
+      'PRODUCT_EXTERNAL_MAPPING_CORRECTED',
+      'PAYMENT_UPDATE',
+      'PAYMENT_DELETE',
+    ];
+
+    for (const actionType of laterModuleActionTypes) {
+      const response = await server.inject({
+        method: 'GET',
+        url: `/logs?actionType=${actionType}`,
+        headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.actionLog.findMany).toHaveBeenLastCalledWith({
+        where: { actionType },
+        orderBy: { createdAt: 'desc' },
+        skip: 0,
+        take: 20,
+      });
+      expect(prisma.actionLog.count).toHaveBeenLastCalledWith({
+        where: { actionType },
+      });
+    }
+
+    await server.close();
+  });
+
   it('rejects unknown actionType as VALIDATION_ERROR', async () => {
     const actor = buildActor({ id: 'admin_1', roles: ['ADMIN'] });
     const prisma = buildPrisma({ actor, items: [], total: 0 });
