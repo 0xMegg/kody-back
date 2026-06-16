@@ -20,7 +20,7 @@ function issueToken(userId: string, roles: Role[]) {
 }
 
 describe('shipment routes', () => {
-  it('allocates a shipment once, deducts stock, links OUTBOUND movement to ShipmentItem, and logs an event', async () => {
+  it('allocates a shipment once without deducting stock before completion, and logs an event', async () => {
     const actor = buildActor({ roles: ['WAREHOUSE'] });
     const prisma = buildPrisma({ actor, stockOnHand: 5 });
     const server = buildTestServer(prisma);
@@ -34,22 +34,11 @@ describe('shipment routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data.orderId).toBe(ORDER_ID);
-    expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith('SELECT id FROM "Product" WHERE id = $1 FOR UPDATE', PRODUCT_ID);
-    expect(prisma.product.update).toHaveBeenCalledWith({
-      where: { id: PRODUCT_ID },
-      data: { stockOnHand: { decrement: 2 }, shipmentBasedStock: { decrement: 2 } },
-    });
+    expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
+    expect(prisma.product.findUnique).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
     expect(prisma.orderItem.update).toHaveBeenCalledWith({ where: { id: ORDER_ITEM_ID }, data: { shipmentStatus: 'PENDING' } });
-    expect(prisma.stockMovement.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        productId: PRODUCT_ID,
-        shipmentItemId: 'ship_item_1',
-        type: 'OUTBOUND',
-        quantity: -2,
-        previousQty: 5,
-        newQty: 3,
-      }),
-    });
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
     expect(prisma.shipmentEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ shipmentId: SHIPMENT_ID, eventType: 'ALLOCATED', actorUserId: actor.id }),
     });
@@ -144,6 +133,23 @@ describe('shipment routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(prisma.orderItem.update).toHaveBeenCalledWith({ where: { id: ORDER_ITEM_ID }, data: { shipmentStatus: 'COMPLETED' } });
+    expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith('SELECT id FROM "Product" WHERE id = $1 FOR UPDATE', PRODUCT_ID);
+    expect(prisma.product.update).toHaveBeenCalledWith({
+      where: { id: PRODUCT_ID },
+      data: { stockOnHand: { decrement: 2 }, shipmentBasedStock: { decrement: 2 } },
+    });
+    expect(prisma.stockMovement.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        productId: PRODUCT_ID,
+        shipmentItemId: 'ship_item_1',
+        type: 'OUTBOUND',
+        quantity: -2,
+        previousQty: 5,
+        newQty: 3,
+        reason: `Shipment completion ${SHIPMENT_ID}`,
+        createdById: actor.id,
+      }),
+    });
     expect(prisma.shipment.update).toHaveBeenCalledWith({
       where: { id: SHIPMENT_ID },
       data: { status: 'COMPLETED' },
@@ -186,6 +192,63 @@ describe('shipment routes', () => {
         }),
       }),
     });
+    await server.close();
+  });
+
+  it('does not deduct stock twice when completing an already completed shipment with an outbound movement', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({
+      actor,
+      stockOnHand: 3,
+      itemShipmentStatus: 'COMPLETED',
+      orderId: ORDER_ID,
+      stockMovementId: 'move_existing',
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/complete`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.stockMovement.findFirst).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
+    expect(prisma.orderItem.update).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('rechecks outbound movement after product lock before deducting stock on shipment completion', async () => {
+    const actor = buildActor({ roles: ['WAREHOUSE'] });
+    const prisma = buildPrisma({
+      actor,
+      stockOnHand: 3,
+      itemShipmentStatus: 'PENDING',
+      orderId: ORDER_ID,
+      concurrentOutboundMovementId: 'move_concurrent',
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/shipments/${SHIPMENT_ID}/complete`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith('SELECT id FROM "Product" WHERE id = $1 FOR UPDATE', PRODUCT_ID);
+    expect(prisma.stockMovement.findFirst).toHaveBeenCalledWith({
+      where: { shipmentItemId: 'ship_item_1', type: 'OUTBOUND' },
+      select: { id: true },
+    });
+    expect(prisma.product.findUnique).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
+    expect(prisma.orderItem.update).toHaveBeenCalledWith({ where: { id: ORDER_ITEM_ID }, data: { shipmentStatus: 'COMPLETED' } });
     await server.close();
   });
 
@@ -322,15 +385,15 @@ describe('shipment routes', () => {
     await server.close();
   });
 
-  it('rejects allocation when stock is insufficient and leaves shipment items untouched', async () => {
+  it('rejects shipment complete when stock is insufficient and leaves shipment items untouched', async () => {
     const actor = buildActor({ roles: ['WAREHOUSE'] });
-    const prisma = buildPrisma({ actor, stockOnHand: 1 });
+    const prisma = buildPrisma({ actor, stockOnHand: 1, itemShipmentStatus: 'PENDING', orderId: ORDER_ID });
     const server = buildTestServer(prisma);
     await server.ready();
 
     const response = await server.inject({
       method: 'POST',
-      url: `/shipments/${SHIPMENT_ID}/allocate`,
+      url: `/shipments/${SHIPMENT_ID}/complete`,
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
     });
 
@@ -394,9 +457,14 @@ function buildPrisma(options: {
   orderId?: string | null;
   itemShipmentStatus?: 'NOT_SHIPPED' | 'PENDING' | 'COMPLETED';
   missingShipment?: boolean;
+  stockMovementId?: string;
+  concurrentOutboundMovementId?: string;
 }) {
   const actor = options.actor;
   const shipment = buildShipment({ orderId: options.orderId, itemShipmentStatus: options.itemShipmentStatus });
+  if (options.stockMovementId) {
+    shipment.items[0].stockMovements = [{ id: options.stockMovementId }];
+  }
   const prisma = {
     $transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(prisma)),
     $executeRawUnsafe: vi.fn(async () => 1),
@@ -438,6 +506,9 @@ function buildPrisma(options: {
       }),
     },
     stockMovement: {
+      findFirst: vi.fn(async () =>
+        options.concurrentOutboundMovementId ? { id: options.concurrentOutboundMovementId } : null,
+      ),
       create: vi.fn(async () => {
         const movement = { id: 'move_1' };
         shipment.items[0].stockMovements = [movement];

@@ -100,6 +100,10 @@ interface ShipmentRepository {
     update(args: { where: { id: string }; data: Record<string, unknown> }): Promise<unknown>;
   };
   stockMovement: {
+    findFirst(args: {
+      where: { shipmentItemId: string; type: 'OUTBOUND' };
+      select?: { id: boolean };
+    }): Promise<{ id: string } | null>;
     create(args: { data: Record<string, unknown> }): Promise<{ id: string }>;
   };
   shipmentEvent: {
@@ -146,37 +150,7 @@ export class ShipmentService {
           continue;
         }
 
-        await lockProduct(tx, item.productId);
-        const current = await tx.product.findUnique({ where: { id: item.productId } });
-        if (!current) {
-          throw new DomainRuleError('PRODUCT_NOT_FOUND', 'Product not found', 404);
-        }
-        if (current.stockOnHand < item.quantity) {
-          throw new DomainRuleError('INSUFFICIENT_STOCK', 'Insufficient stock for shipment allocation', 400);
-        }
-        const previousQty = current.stockOnHand;
-        const newQty = previousQty - item.quantity;
-
-        await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            stockOnHand: { decrement: item.quantity },
-            shipmentBasedStock: { decrement: item.quantity },
-          },
-        });
         await tx.orderItem.update({ where: { id: item.orderItemId }, data: { shipmentStatus: 'PENDING' } });
-        await tx.stockMovement.create({
-          data: {
-            productId: item.productId,
-            shipmentItemId: item.id,
-            type: 'OUTBOUND',
-            quantity: -item.quantity,
-            previousQty,
-            newQty,
-            reason: `Shipment allocation ${shipment.id}`,
-            createdById: input.actorUserId,
-          },
-        });
       }
 
       await tx.shipmentEvent.create({
@@ -263,6 +237,50 @@ export class ShipmentService {
         if (!item.orderItem) {
           throw new DomainRuleError('ORDER_ITEM_NOT_FOUND', 'Shipment item is missing its order item', 400);
         }
+
+        const alreadyHasOutboundMovement = (item.stockMovements ?? []).length > 0;
+        if (!alreadyHasOutboundMovement) {
+          await lockProduct(tx, item.productId);
+          const existingOutboundMovement = await tx.stockMovement.findFirst({
+            where: { shipmentItemId: item.id, type: 'OUTBOUND' },
+            select: { id: true },
+          });
+          if (existingOutboundMovement) {
+            item.stockMovements = [existingOutboundMovement];
+          } else {
+            const product = await tx.product.findUnique({ where: { id: item.productId } });
+            if (!product) {
+              throw new DomainRuleError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+            }
+            if (product.stockOnHand < item.quantity) {
+              throw new DomainRuleError('INSUFFICIENT_STOCK', 'Insufficient stock for shipment completion', 400);
+            }
+            const previousQty = product.stockOnHand;
+            const newQty = previousQty - item.quantity;
+
+            await tx.product.update({
+              where: { id: item.productId },
+              data: {
+                stockOnHand: { decrement: item.quantity },
+                shipmentBasedStock: { decrement: item.quantity },
+              },
+            });
+            const stockMovement = await tx.stockMovement.create({
+              data: {
+                productId: item.productId,
+                shipmentItemId: item.id,
+                type: 'OUTBOUND',
+                quantity: -item.quantity,
+                previousQty,
+                newQty,
+                reason: `Shipment completion ${current.id}`,
+                createdById: input.actorUserId,
+              },
+            });
+            item.stockMovements = [stockMovement];
+          }
+        }
+
         if (item.orderItem.shipmentStatus !== 'COMPLETED') {
           await tx.orderItem.update({ where: { id: item.orderItemId }, data: { shipmentStatus: 'COMPLETED' } });
         }
