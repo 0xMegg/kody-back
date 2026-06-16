@@ -1,3 +1,4 @@
+import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 import { DomainRuleError } from '@/domain/shared/errors.js';
 import type { Incoterm } from '@/domain/shared/types.js';
 
@@ -16,15 +17,19 @@ export interface ShippingAddressSummary {
 }
 
 export interface CreateShippingAddressInput {
+  actorUserId: string;
   accountId: string;
   label: string;
   country: string;
   fullAddress: string;
   isPrimary?: boolean;
   defaultIncoterm?: Incoterm;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface UpdateShippingAddressInput {
+  actorUserId: string;
   accountId: string;
   addressId: string;
   label?: string;
@@ -32,11 +37,16 @@ export interface UpdateShippingAddressInput {
   fullAddress?: string;
   isPrimary?: boolean;
   defaultIncoterm?: Incoterm | null;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface DeleteShippingAddressInput {
+  actorUserId: string;
   accountId: string;
   addressId: string;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 interface StoredShippingAddress {
@@ -81,7 +91,10 @@ interface ShippingAddressRepository {
 }
 
 export class ShippingAddressService {
-  constructor(private readonly repository: ShippingAddressRepository) {}
+  constructor(
+    private readonly repository: ShippingAddressRepository,
+    private readonly actionLogWriter: ActionLogWriter,
+  ) {}
 
   async createAddress(input: CreateShippingAddressInput): Promise<ShippingAddressSummary> {
     const accountId = normalizeRequiredString(input.accountId, 'accountId');
@@ -112,6 +125,17 @@ export class ShippingAddressService {
           ...(defaultIncoterm !== undefined ? { defaultIncoterm } : {}),
         },
       });
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: normalizeRequiredString(input.actorUserId, 'actorUserId'),
+      actionType: 'ACCOUNT_UPDATE',
+      targetType: 'ShippingAddress',
+      targetId: created.id,
+      afterJson: toShippingAddressAuditPayload(created),
+      metadataJson: { accountId },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
     });
 
     return toShippingAddressSummary(created);
@@ -189,6 +213,18 @@ export class ShippingAddressService {
       });
     });
 
+    await this.actionLogWriter.write({
+      actorUserId: normalizeRequiredString(input.actorUserId, 'actorUserId'),
+      actionType: 'ACCOUNT_UPDATE',
+      targetType: 'ShippingAddress',
+      targetId: addressId,
+      beforeJson: pickShippingAddressAuditFields(current, Object.keys(changes)),
+      afterJson: pickShippingAddressAuditFields(updated, Object.keys(changes)),
+      metadataJson: { accountId },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+
     return toShippingAddressSummary(updated);
   }
 
@@ -197,9 +233,20 @@ export class ShippingAddressService {
     const addressId = normalizeRequiredString(input.addressId, 'addressId');
 
     await this.assertAccountExists(accountId);
-    await this.findAddress(accountId, addressId);
+    const current = await this.findAddress(accountId, addressId);
 
     await this.repository.shippingAddress.delete({ where: { id: addressId } });
+
+    await this.actionLogWriter.write({
+      actorUserId: normalizeRequiredString(input.actorUserId, 'actorUserId'),
+      actionType: 'ACCOUNT_UPDATE',
+      targetType: 'ShippingAddress',
+      targetId: addressId,
+      beforeJson: toShippingAddressAuditPayload(current),
+      metadataJson: { accountId },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
 
     return { id: addressId };
   }
@@ -276,4 +323,30 @@ function toShippingAddressSummary(address: StoredShippingAddress): ShippingAddre
     createdAt: address.createdAt,
     updatedAt: address.updatedAt,
   };
+}
+
+function toShippingAddressAuditPayload(address: StoredShippingAddress): Record<string, unknown> {
+  return {
+    id: address.id,
+    accountId: address.accountId,
+    label: address.label,
+    country: address.country,
+    fullAddress: address.fullAddress,
+    isPrimary: address.isPrimary,
+    defaultIncoterm: address.defaultIncoterm,
+  };
+}
+
+function pickShippingAddressAuditFields(
+  address: StoredShippingAddress,
+  fields: string[],
+): Record<string, unknown> {
+  const payload = toShippingAddressAuditPayload(address);
+  const picked: Record<string, unknown> = { id: address.id, accountId: address.accountId };
+
+  for (const field of fields) {
+    picked[field] = payload[field];
+  }
+
+  return picked;
 }

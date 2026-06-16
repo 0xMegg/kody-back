@@ -107,8 +107,11 @@ export function registerAccountRoutes(server: FastifyInstance): void {
       const accountId = parseAddressAccountId(request.params);
       const body = parseCreateAddressBody(request.body);
       const result = await server.services.shippingAddresses.createAddress({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
         accountId,
         ...body,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
       });
 
       reply.status(201);
@@ -147,9 +150,12 @@ export function registerAccountRoutes(server: FastifyInstance): void {
       const { accountId, addressId } = parseAddressParams(request.params);
       const body = parseUpdateAddressBody(request.body);
       const result = await server.services.shippingAddresses.updateAddress({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
         accountId,
         addressId,
         ...body,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
       });
 
       reply.status(200);
@@ -163,8 +169,11 @@ export function registerAccountRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const { accountId, addressId } = parseAddressParams(request.params);
       const result = await server.services.shippingAddresses.deleteAddress({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
         accountId,
         addressId,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
       });
 
       reply.status(200);
@@ -337,8 +346,14 @@ function parseDiscountRate(value: unknown): number {
   return value;
 }
 
-type CreateAddressBody = Omit<CreateShippingAddressInput, 'accountId'>;
-type UpdateAddressBody = Omit<UpdateShippingAddressInput, 'accountId' | 'addressId'>;
+type CreateAddressBody = Omit<
+  CreateShippingAddressInput,
+  'actorUserId' | 'accountId' | 'ipAddress' | 'userAgent'
+>;
+type UpdateAddressBody = Omit<
+  UpdateShippingAddressInput,
+  'actorUserId' | 'accountId' | 'addressId' | 'ipAddress' | 'userAgent'
+>;
 
 function parseAddressAccountId(params: unknown): string {
   if (

@@ -122,6 +122,40 @@ describe('shipping address routes', () => {
     await server.close();
   });
 
+  it('writes an action log when creating a shipping address', async () => {
+    const actor = buildActor();
+    const stored = buildStoredAddress();
+    const prisma = buildPrisma({ actor, accounts: [buildStoredAccount()], createdAddress: stored });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/accounts/${ACCOUNT_ID}/addresses`,
+      headers: {
+        authorization: `Bearer ${issueToken(actor.id, actor.roles)}`,
+        'user-agent': 'vitest-create-agent',
+      },
+      remoteAddress: '203.0.113.10',
+      payload: validCreatePayload(),
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'ACCOUNT_UPDATE',
+        targetType: 'ShippingAddress',
+        targetId: stored.id,
+        afterJson: expect.objectContaining({ id: stored.id, accountId: ACCOUNT_ID }),
+        ipAddress: '203.0.113.10',
+        userAgent: 'vitest-create-agent',
+      }),
+    });
+
+    await server.close();
+  });
+
   it('sets existing primary to false when new address is created with isPrimary true', async () => {
     const actor = buildActor();
     const existing = buildStoredAddress({ id: 'addr_old', isPrimary: true });
@@ -314,6 +348,47 @@ describe('shipping address routes', () => {
     await server.close();
   });
 
+  it('writes an action log when updating a shipping address', async () => {
+    const actor = buildActor();
+    const addr = buildStoredAddress();
+    const updated = buildStoredAddress({ label: 'Updated Label' });
+    const prisma = buildPrisma({
+      actor,
+      accounts: [buildStoredAccount()],
+      addresses: [addr],
+      updatedAddress: updated,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/accounts/${ACCOUNT_ID}/addresses/${ADDRESS_ID}`,
+      headers: {
+        authorization: `Bearer ${issueToken(actor.id, actor.roles)}`,
+        'user-agent': 'vitest-update-agent',
+      },
+      remoteAddress: '203.0.113.11',
+      payload: { label: 'Updated Label' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'ACCOUNT_UPDATE',
+        targetType: 'ShippingAddress',
+        targetId: ADDRESS_ID,
+        beforeJson: expect.objectContaining({ label: addr.label }),
+        afterJson: expect.objectContaining({ label: 'Updated Label' }),
+        ipAddress: '203.0.113.11',
+        userAgent: 'vitest-update-agent',
+      }),
+    });
+
+    await server.close();
+  });
+
   it('unsets existing primary when PATCH sets isPrimary true', async () => {
     const actor = buildActor();
     const addr = buildStoredAddress({ isPrimary: false });
@@ -383,6 +458,39 @@ describe('shipping address routes', () => {
     expect(response.statusCode).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.data.id).toBe(ADDRESS_ID);
+
+    await server.close();
+  });
+
+  it('writes an action log when deleting a shipping address', async () => {
+    const actor = buildActor();
+    const addr = buildStoredAddress();
+    const prisma = buildPrisma({ actor, accounts: [buildStoredAccount()], addresses: [addr] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'DELETE',
+      url: `/accounts/${ACCOUNT_ID}/addresses/${ADDRESS_ID}`,
+      headers: {
+        authorization: `Bearer ${issueToken(actor.id, actor.roles)}`,
+        'user-agent': 'vitest-delete-agent',
+      },
+      remoteAddress: '203.0.113.12',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'ACCOUNT_UPDATE',
+        targetType: 'ShippingAddress',
+        targetId: ADDRESS_ID,
+        beforeJson: expect.objectContaining({ id: ADDRESS_ID, accountId: ACCOUNT_ID }),
+        ipAddress: '203.0.113.12',
+        userAgent: 'vitest-delete-agent',
+      }),
+    });
 
     await server.close();
   });

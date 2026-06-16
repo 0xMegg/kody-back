@@ -57,7 +57,7 @@ export function buildServerServices(
 
   return {
     accounts: new AccountService(prisma as never, actionLogWriter),
-    shippingAddresses: new ShippingAddressService(prisma as never),
+    shippingAddresses: new ShippingAddressService(prisma as never, actionLogWriter),
     adminEmployees: new AdminEmployeeService(prisma as never, actionLogWriter),
     adminUsers: new AdminUserService(prisma as never, actionLogWriter),
     auth: new AuthService(prisma as never, actionLogWriter, {
