@@ -29,6 +29,8 @@ const DRY_RUN_EXISTING_PRODUCT_SCAN_LIMIT = 10000;
 
 type ProductPriceStatus = ImwebProductPriceStatus;
 
+export type ProductDisplayStatus = 'ON_SALE' | 'SOLD_OUT' | 'HIDDEN' | 'DRAFT';
+
 export interface ArtistSummary {
   id: string;
   name: string;
@@ -91,6 +93,8 @@ export interface ProductSummary {
   shipmentBasedStock: number;
   saleStatus: ProductSaleStatus;
   isDisplayed: boolean;
+  displayStatus: ProductDisplayStatus;
+  priceUSD: number | null;
   categoryMappingSource: CategoryMappingSource;
   sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus;
@@ -381,6 +385,12 @@ interface ProductRepository {
       orderBy: Array<Record<string, 'asc' | 'desc'>>;
     }): Promise<StoredStockMovement[]>;
   };
+  fxRate?: {
+    findFirst(args: {
+      where: Record<string, unknown>;
+      orderBy: Array<Record<string, 'asc' | 'desc'>>;
+    }): Promise<{ rateToKRW: unknown } | null>;
+  };
 }
 
 export class ProductService {
@@ -542,7 +552,7 @@ export class ProductService {
       userAgent: input.userAgent,
     });
 
-    return toProductSummary(created);
+    return toProductSummary(created, undefined, undefined, await this.getLatestUsdRateToKRW());
   }
 
   async listProducts(input: ListProductsInput): Promise<ListProductsResult> {
@@ -579,8 +589,10 @@ export class ProductService {
     const sliced = hasMore ? items.slice(0, limit) : items;
     const nextCursor = hasMore ? sliced[sliced.length - 1].id : null;
 
+    const usdRateToKRW = await this.getLatestUsdRateToKRW();
+
     return {
-      items: sliced.map((product) => toProductSummary(product)),
+      items: sliced.map((product) => toProductSummary(product, undefined, undefined, usdRateToKRW)),
       nextCursor,
     };
   }
@@ -632,7 +644,7 @@ export class ProductService {
   async getProduct(productId: string): Promise<ProductSummary> {
     const id = normalizeRequiredString(productId, 'productId');
     const product = await this.findProduct(id);
-    const [externalMappings, options] = await Promise.all([
+    const [externalMappings, options, usdRateToKRW] = await Promise.all([
       this.repository.productExternalMapping.findMany({
         where: { productId: id },
         orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
@@ -642,8 +654,9 @@ export class ProductService {
         orderBy: [{ position: 'asc' }, { id: 'asc' }],
         include: { values: { orderBy: [{ position: 'asc' }, { id: 'asc' }] } },
       }),
+      this.getLatestUsdRateToKRW(),
     ]);
-    return toProductSummary(product, externalMappings, options);
+    return toProductSummary(product, externalMappings, options, usdRateToKRW);
   }
 
   async correctExternalMapping(input: CorrectExternalMappingInput): Promise<CorrectExternalMappingResult> {
@@ -933,7 +946,7 @@ export class ProductService {
     }
 
     if (Object.keys(changes).length === 0) {
-      return toProductSummary(current);
+      return toProductSummary(current, undefined, undefined, await this.getLatestUsdRateToKRW());
     }
 
     const updated = await this.repository.product.update({
@@ -952,7 +965,7 @@ export class ProductService {
       userAgent: input.userAgent,
     });
 
-    return toProductSummary(updated);
+    return toProductSummary(updated, undefined, undefined, await this.getLatestUsdRateToKRW());
   }
 
   async upsertImwebProduct(input: UpsertImwebProductInput): Promise<UpsertImwebProductResult> {
@@ -1009,7 +1022,10 @@ export class ProductService {
         userAgent: input.userAgent,
       });
 
-      return { status: 'update', product: toProductSummary(updated) };
+      return {
+        status: 'update',
+        product: toProductSummary(updated, undefined, undefined, await this.getLatestUsdRateToKRW()),
+      };
     }
 
     const productId = await this.generateProductId();
@@ -1053,7 +1069,10 @@ export class ProductService {
       userAgent: input.userAgent,
     });
 
-    return { status: 'create', product: toProductSummary(created) };
+    return {
+      status: 'create',
+      product: toProductSummary(created, undefined, undefined, await this.getLatestUsdRateToKRW()),
+    };
   }
 
   private async replaceImwebProductOptions(productId: string, mapped: ImwebMappedProduct): Promise<void> {
@@ -1276,6 +1295,22 @@ export class ProductService {
     });
 
     return `KODY-PROD-${String(sequence.lastSeq).padStart(6, '0')}`;
+  }
+
+  /**
+   * Latest positive USD->KRW conversion rate, normalized to a scale-4 decimal
+   * string. Returns null when no positive USD rate is available so callers can
+   * surface `priceUSD: null` on derived responses.
+   */
+  private async getLatestUsdRateToKRW(): Promise<string | null> {
+    const fxRate = this.repository.fxRate;
+    if (!fxRate) return null;
+    const rate = await fxRate.findFirst({
+      where: { currency: 'USD', rateToKRW: { gt: 0 } },
+      orderBy: [{ date: 'desc' }],
+    });
+    if (!rate || rate.rateToKRW == null) return null;
+    return decimalToString(rate.rateToKRW, 4);
   }
 }
 
@@ -1785,11 +1820,46 @@ function toArtistSummary(artist: StoredArtist): ArtistSummary {
   };
 }
 
+function deriveDisplayStatus(
+  saleStatus: ProductSaleStatus,
+  isDisplayed: boolean,
+): ProductDisplayStatus {
+  if (isDisplayed === false || saleStatus === 'OFF_SALE') return 'HIDDEN';
+  if (saleStatus === 'SOLD_OUT') return 'SOLD_OUT';
+  if (saleStatus === 'DRAFT') return 'DRAFT';
+  if (saleStatus === 'ON_SALE') return 'ON_SALE';
+  return 'DRAFT';
+}
+
+function scaledDecimalToBigInt(value: string, scale: number): bigint {
+  const [integerPart, fractionalPart = ''] = value.split('.');
+  const frac = fractionalPart.padEnd(scale, '0').slice(0, scale);
+  return BigInt(`${integerPart}${frac}`);
+}
+
+/**
+ * Convert a scale-4 KRW decimal string into an integer USD amount using the
+ * latest positive USD->KRW rate (also a scale-4 decimal string). Uses BigInt
+ * math with round-half-up to avoid JS floating point error. Returns null when
+ * no usable rate is supplied.
+ */
+function deriveUsdPrice(priceKRW: string, usdRateToKRW: string | null): number | null {
+  if (usdRateToKRW === null) return null;
+  const rate = scaledDecimalToBigInt(usdRateToKRW, 4);
+  if (rate <= 0n) return null;
+  const price = scaledDecimalToBigInt(priceKRW, 4);
+  // round-half-up: floor((price / rate) + 1/2) = floor((2*price + rate) / (2*rate))
+  const usd = (2n * price + rate) / (2n * rate);
+  return Number(usd);
+}
+
 function toProductSummary(
   product: StoredProduct,
   externalMappings?: readonly StoredProductExternalMapping[],
   options?: readonly StoredProductOption[],
+  usdRateToKRW: string | null = null,
 ): ProductSummary {
+  const priceKRW = decimalToString(product.priceKRW, 4);
   return {
     id: product.id,
     artistId: product.artistId,
@@ -1803,7 +1873,7 @@ function toProductSummary(
     releaseDateText: product.releaseDateText,
     releaseDate: product.releaseDate,
     weightG: product.weightG,
-    priceKRW: decimalToString(product.priceKRW, 4),
+    priceKRW,
     priceStatus: product.priceStatus,
     lastConfirmedPriceKRW: product.lastConfirmedPriceKRW == null ? null : decimalToString(product.lastConfirmedPriceKRW, 4),
     lastConfirmedPriceAt: product.lastConfirmedPriceAt,
@@ -1817,6 +1887,8 @@ function toProductSummary(
     shipmentBasedStock: product.shipmentBasedStock,
     saleStatus: product.saleStatus,
     isDisplayed: product.isDisplayed,
+    displayStatus: deriveDisplayStatus(product.saleStatus, product.isDisplayed),
+    priceUSD: deriveUsdPrice(priceKRW, usdRateToKRW),
     categoryMappingSource: product.categoryMappingSource,
     sourceCategoryCodes: [...product.sourceCategoryCodes],
     categoryReviewStatus: product.categoryReviewStatus,

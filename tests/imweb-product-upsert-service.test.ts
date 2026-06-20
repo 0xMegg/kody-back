@@ -509,6 +509,9 @@ function buildRepository(input: {
       create: vi.fn(),
       findMany: vi.fn(async () => []),
     },
+    fxRate: {
+      findFirst: vi.fn(async () => ({ rateToKRW: '1360.0000' })),
+    },
     actionLog: { create: vi.fn(async () => ({})) },
   };
 }
