@@ -79,6 +79,32 @@ describe('Imweb product dry-run importer', () => {
     expect(result.mapped?.rawCategoryIds).toEqual(['CATE70', 'CATE65']);
   });
 
+  it('preserves approved Imweb manufacturer-column remapping as releaseDateText and keeps unsafe dates nullable', () => {
+    const result = parseImwebProductRow(validRow({ 제조사: 'BELIFT manufacturer memo' }), 9);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped).toMatchObject({
+      artistName: 'BELIFT LAB',
+      releaseDateText: 'BELIFT manufacturer memo',
+      releaseDate: null,
+    });
+  });
+
+  it('deduplicates required option display values without creating variant stock semantics', () => {
+    const result = parseImwebProductRow(
+      validRow({ 필수옵션명: 'VERSION', 필수옵션값: ' MUSIC PLANET ,KTOWN4U, MUSIC   PLANET , ' }),
+      10,
+    );
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped?.optionName).toBe('VERSION');
+    expect(result.mapped?.optionValues).toEqual(['MUSIC PLANET', 'KTOWN4U']);
+    expect(result.mapped).not.toHaveProperty('variantId');
+    expect(result.mapped).not.toHaveProperty('optionStockOnHand');
+  });
+
   it('preserves Imweb decimal sales prices and converts kg weight to gram integers', () => {
     const result = parseImwebProductRow(validRow({ 판매가: '47637.5693', 무게: '0.065' }), 801);
 

@@ -1027,6 +1027,39 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('ignores hidden write flags on dry-run uploads and never calls product/mapping writes', async () => {
+    const actor = buildActor({ roles: ['OPERATIONS'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+    const contentBase64 = workbookBase64([validImwebExcelRow({ 상품번호: '6571', 판매가: '17440' })]);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/dry-run?commit=true&write=true&import=true',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        fileName: 'imweb-products.xlsx',
+        contentBase64,
+        sizeBytes: Buffer.byteLength(contentBase64, 'base64'),
+        commit: true,
+        write: true,
+        import: true,
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.summary).toMatchObject({ totalRows: 1, create: 1, update: 0 });
+    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.productExternalMapping.create).not.toHaveBeenCalled();
+    expect(prisma.productExternalMapping.update).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('marks dry-run rows as updates and search-aid warnings against existing OMS products', async () => {
     const actor = buildActor({ roles: ['OPERATIONS'] });
     const existingProduct = buildStoredProduct({

@@ -43,12 +43,38 @@ describe('Product schema contract', () => {
     expect(product).toContain('@@index([barcode])');
   });
 
-  it('adds approved import, option, and KODY product sequence models', () => {
+  it('keeps the approved Imweb default-bundle Product fields nullable and source-preserving', () => {
+    const product = modelBlock('Product');
+
+    expect(product).toContain('artistId String?');
+    expect(product).toContain(
+      'artist   Artist? @relation(fields: [artistId], references: [id], onDelete: Restrict)',
+    );
+    expect(product).toMatch(/^\s+labelName\s+String\?/m);
+    expect(product).toMatch(/^\s+thumbnailUrl\s+String\?/m);
+    expect(product).toMatch(/^\s+detailHtml\s+String\?/m);
+    expect(product).toMatch(/^\s+releaseDateText\s+String\?/m);
+    expect(product).toMatch(/^\s+releaseDate\s+DateTime\?/m);
+    expect(product).toMatch(/^\s+category\s+ProductCategory\?/m);
+    expect(product).toContain('sourceCategoryCodes   String[]              @default([])');
+    expect(product).toContain('categoryMappingSource CategoryMappingSource @default(EXACT)');
+    expect(product).toContain('categoryReviewStatus  CategoryReviewStatus  @default(PENDING)');
+  });
+
+  it('adds approved import, option, and KODY product sequence models without variant stock semantics', () => {
+    const option = modelBlock('ProductOption');
+    const optionValue = modelBlock('ProductOptionValue');
+
     expect(() => modelBlock('ProductSequence')).not.toThrow();
-    expect(() => modelBlock('ProductOption')).not.toThrow();
-    expect(() => modelBlock('ProductOptionValue')).not.toThrow();
+    expect(option).toContain('product   Product @relation(fields: [productId], references: [id])');
+    expect(optionValue).toContain('option   ProductOption @relation(fields: [optionId], references: [id])');
+    expect(optionValue).toContain('priceDeltaKRW Int    @default(0)');
+    expect(optionValue).toContain('stockSnapshot Int?');
+    expect(optionValue).not.toContain('stockSnapshot Int @default');
+    expect(optionValue).not.toContain('stockOnHand');
     expect(() => modelBlock('ImportBatch')).not.toThrow();
     expect(() => modelBlock('ImportRow')).not.toThrow();
+    expect(schema).not.toContain('model ProductVariant');
   });
 
   it('does not introduce ProductVariant or redirect order/shipment/stock relations away from Product', () => {

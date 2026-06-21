@@ -41,6 +41,10 @@ describe('ProductService Imweb import upsert contract', () => {
         categoryReviewStatus: 'MAPPED',
       }),
     });
+    const createData = repo.product.create.mock.calls[0][0].data;
+    expect(createData).not.toHaveProperty('artistId');
+    expect(createData).not.toHaveProperty('externalProductId');
+    expect(repo.importRow.create).not.toHaveBeenCalled();
     expect(repo.productExternalMapping.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         productId: 'KODY-PROD-000001',
@@ -100,6 +104,36 @@ describe('ProductService Imweb import upsert contract', () => {
 
     expect(repo.product.create).not.toHaveBeenCalled();
     expect(repo.productExternalMapping.create).not.toHaveBeenCalled();
+  });
+
+  it('allows duplicate barcode on Imweb create import because barcode is search evidence, not identity', async () => {
+    const repo = buildRepository({
+      existingProduct: storedProduct({ id: 'KODY-PROD-EXISTING-BARCODE', sku: 'OTHER-SKU', barcode: '8809704435086' }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    const result = await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_duplicate_barcode_allowed',
+      rawHash: 'hash-duplicate-barcode-allowed',
+      mapped: mappedProduct({ externalProductId: '8888', sku: 'SKU-UNIQUE', barcode: '8809704435086' }),
+    });
+
+    expect(result.status).toBe('create');
+    expect(repo.product.findFirst).toHaveBeenCalledWith({ where: { sku: 'SKU-UNIQUE' } });
+    expect(repo.product.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        id: 'KODY-PROD-000001',
+        sku: 'SKU-UNIQUE',
+        barcode: '8809704435086',
+      }),
+    });
+    expect(repo.productExternalMapping.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '8888',
+      }),
+    });
   });
 
   it('rejects duplicate SKU on Imweb update when the SKU belongs to another Product', async () => {
