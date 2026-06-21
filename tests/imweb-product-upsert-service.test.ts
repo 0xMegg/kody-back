@@ -250,6 +250,53 @@ describe('ProductService Imweb import upsert contract', () => {
     });
   });
 
+  it('does not mutate domain-owned order or shipment stock counters during Imweb import upserts', async () => {
+    const createRepo = buildRepository();
+    const createService = new ProductService(createRepo, new ActionLogWriter(createRepo.actionLog));
+
+    await createService.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_counter_create',
+      rawHash: 'hash-counter-create',
+      mapped: mappedProduct({ stockOnHand: 14 }),
+    });
+
+    expect(createRepo.product.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ stockOnHand: 14 }),
+    });
+    const createData = createRepo.product.create.mock.calls[0][0].data;
+    expect(createData).not.toHaveProperty('orderBasedStock');
+    expect(createData).not.toHaveProperty('shipmentBasedStock');
+
+    const updateRepo = buildRepository({
+      existingMapping: {
+        id: 'map_6571',
+        productId: 'KODY-PROD-000123',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+      existingProduct: storedProduct({
+        id: 'KODY-PROD-000123',
+        stockOnHand: 7,
+        orderBasedStock: 2,
+        shipmentBasedStock: 3,
+      }),
+    });
+    const updateService = new ProductService(updateRepo, new ActionLogWriter(updateRepo.actionLog));
+
+    await updateService.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_counter_update',
+      rawHash: 'hash-counter-update',
+      mapped: mappedProduct({ externalProductId: '6571', stockOnHand: 20 }),
+    });
+
+    const updateData = updateRepo.product.update.mock.calls[0][0].data;
+    expect(updateData).toMatchObject({ stockOnHand: 20 });
+    expect(updateData).not.toHaveProperty('orderBasedStock');
+    expect(updateData).not.toHaveProperty('shipmentBasedStock');
+  });
+
   it('persists structured warning evidence on ImportRow when a write import row is provided', async () => {
     const repo = buildRepository();
     const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));

@@ -116,6 +116,22 @@ describe('Imweb product dry-run importer', () => {
     expect(result.mapped?.sourcePriceRaw).toBe('47637.5693');
   });
 
+  it('preserves invalid barcode candidates as source evidence while warning instead of blocking', () => {
+    const result = parseImwebProductRow(validRow({ 원산지: 'MADE-IN-KOREA' }), 802);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped?.barcode).toBe('MADE-IN-KOREA');
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: 'INVALID_BARCODE_CANDIDATE',
+      severity: 'WARN',
+      domain: 'BARCODE',
+      scope: 'SOURCE_DEVIATION',
+      field: '원산지',
+      context: { value: 'MADE-IN-KOREA' },
+    }));
+  });
+
   it('registers non-numeric Imweb prices as missing-price review instead of failing the row', () => {
     const result = parseImwebProductRow(validRow({ 판매가: '가격없음', 판매상태: '숨김' }), 4925);
 
@@ -175,6 +191,23 @@ describe('Imweb product dry-run importer', () => {
       scope: 'KODY_REVIEW_REQUIRED',
       field: '카테고리ID',
     }));
+  });
+
+  it('keeps option-use source deviations as warning evidence without creating variant semantics', () => {
+    const result = parseImwebProductRow(
+      validRow({ 옵션사용: 'Y', 필수옵션명: '', 필수옵션값: '' }),
+      43,
+    );
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped?.optionName).toBeNull();
+    expect(result.mapped?.optionValues).toEqual([]);
+    expect(result.mapped).not.toHaveProperty('variantId');
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'MISSING_OPTION_NAME', domain: 'OPTION', scope: 'SOURCE_DEVIATION' }),
+      expect.objectContaining({ code: 'MISSING_OPTION_VALUES', domain: 'OPTION', scope: 'SOURCE_DEVIATION' }),
+    ]));
   });
 
   it('fails rows with missing required values or invalid numeric fields', () => {

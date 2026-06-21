@@ -1143,6 +1143,38 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('keeps disabled Imweb commit route read-only even when a commit payload is supplied', async () => {
+    const actor = buildActor({ roles: ['ADMIN'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/commit',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        batchId: 'dryrun_1',
+        commit: true,
+        write: true,
+        import: true,
+        items: [{ externalProductId: '6571' }],
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(403);
+    expect(body.error.code).toBe('COMMIT_DISABLED');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.productExternalMapping.create).not.toHaveBeenCalled();
+    expect(prisma.productExternalMapping.update).not.toHaveBeenCalled();
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('exports selected products as base64 XLSX with a parseable Imweb sheet', async () => {
     const actor = buildActor();
     const product = buildStoredProduct({

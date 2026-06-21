@@ -116,6 +116,27 @@ describe('Product schema contract', () => {
     expect(importRow).toContain('@@index([warningCodes], type: Gin)');
   });
 
+  it('keeps Imweb import audit models as dry-run-first evidence without write-route schema pressure', () => {
+    const importBatch = modelBlock('ImportBatch');
+    const importRow = modelBlock('ImportRow');
+
+    expect(schema).toContain('enum SourceSystem');
+    expect(schema).toContain('IMWEB_KR');
+    expect(schema).toContain('enum ImportBatchStatus');
+    expect(schema).toContain('enum ImportRowOutcome');
+    expect(importBatch).toContain('sourceSystem   SourceSystem');
+    expect(importBatch).toContain('status   ImportBatchStatus @default(PENDING)');
+    expect(importBatch).toContain('isDryRun Boolean           @default(true)');
+    expect(importBatch).toContain('needsReviewRows Int @default(0)');
+    expect(importBatch).toContain('@@index([sourceSystem, startedAt])');
+
+    expect(importRow).toContain('sourceSystem SourceSystem');
+    expect(importRow).toContain('outcome ImportRowOutcome @default(PENDING)');
+    expect(importRow).toContain('@@unique([batchId, rowIndex])');
+    expect(importRow).toContain('@@unique([batchId, externalProductId])');
+    expect(importRow).toContain('@@index([sourceSystem, externalProductId, rawHash])');
+  });
+
   it('preserves existing Product relation behavior and stock counter invariants in the migration', () => {
     const product = modelBlock('Product');
 
