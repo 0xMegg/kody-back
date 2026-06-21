@@ -39,6 +39,54 @@ describe('ProductService derived response fields', () => {
     }
   });
 
+  it('includes derived fields on list results and reads the USD rate once per list call', async () => {
+    const repo = buildRepository({
+      product: storedProduct({
+        id: 'KODY-PROD-000001',
+        saleStatus: 'ON_SALE',
+        isDisplayed: false,
+        priceKRW: '2720.0000',
+      }),
+      additionalProducts: [
+        storedProduct({
+          id: 'KODY-PROD-000002',
+          saleStatus: 'SOLD_OUT',
+          isDisplayed: true,
+          priceKRW: '4080.0000',
+        }),
+      ],
+      rateToKRW: '1360.0000',
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    const result = await service.listProducts({ limit: 10 });
+
+    expect(result.items).toHaveLength(2);
+    expect(result.items.map((item) => ({
+      id: item.id,
+      saleStatus: item.saleStatus,
+      isDisplayed: item.isDisplayed,
+      displayStatus: item.displayStatus,
+      priceUSD: item.priceUSD,
+    }))).toEqual([
+      {
+        id: 'KODY-PROD-000001',
+        saleStatus: 'ON_SALE',
+        isDisplayed: false,
+        displayStatus: 'HIDDEN',
+        priceUSD: 2,
+      },
+      {
+        id: 'KODY-PROD-000002',
+        saleStatus: 'SOLD_OUT',
+        isDisplayed: true,
+        displayStatus: 'SOLD_OUT',
+        priceUSD: 3,
+      },
+    ]);
+    expect(repo.fxRate.findFirst).toHaveBeenCalledTimes(1);
+  });
+
   describe('priceUSD derivation', () => {
     it('rounds half-up to an integer USD amount using the latest positive USD rate', async () => {
       // 17440 / 1360 = 12.82... -> 13
@@ -164,9 +212,11 @@ function baseStoredProduct() {
 
 function buildRepository(input: {
   product: ReturnType<typeof storedProduct>;
+  additionalProducts?: ReturnType<typeof storedProduct>[];
   rateToKRW?: string | null;
 }) {
   const rateToKRW = input.rateToKRW === undefined ? '1360.0000' : input.rateToKRW;
+  const products = [input.product, ...(input.additionalProducts ?? [])];
 
   return {
     artist: {
@@ -180,7 +230,7 @@ function buildRepository(input: {
         args.where.id === input.product.id ? input.product : null,
       ),
       findFirst: vi.fn(async () => null),
-      findMany: vi.fn(async () => []),
+      findMany: vi.fn(async () => products),
       update: vi.fn(),
     },
     productExternalMapping: {
