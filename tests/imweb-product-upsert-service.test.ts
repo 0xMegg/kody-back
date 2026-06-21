@@ -59,7 +59,61 @@ describe('ProductService Imweb import upsert contract', () => {
     });
   });
 
+  it('wraps Imweb create write side effects in a single repository transaction', async () => {
+    const repo = buildRepository();
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
 
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_transaction_create',
+      rawHash: 'hash-transaction-create',
+      mapped: mappedProduct({ externalProductId: '7001', sku: 'TX-CREATE' }),
+    });
+
+    expect(repo.$transaction).toHaveBeenCalledTimes(1);
+    expect(repo.product.create).toHaveBeenCalled();
+    expect(repo.productOptionValue.deleteMany).toHaveBeenCalled();
+    expect(repo.productOption.deleteMany).toHaveBeenCalled();
+    expect(repo.productExternalMapping.create).toHaveBeenCalled();
+    expect(repo.product.create.mock.invocationCallOrder[0]).toBeGreaterThan(
+      repo.$transaction.mock.invocationCallOrder[0],
+    );
+    expect(repo.productExternalMapping.create.mock.invocationCallOrder[0]).toBeGreaterThan(
+      repo.$transaction.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('wraps Imweb update write side effects in a single repository transaction', async () => {
+    const repo = buildRepository({
+      existingMapping: {
+        id: 'map_6571',
+        productId: 'KODY-PROD-000123',
+        sourceSystem: 'IMWEB_KR',
+        externalProductId: '6571',
+      },
+      existingProduct: storedProduct({ id: 'KODY-PROD-000123', sku: 'OLD-SKU' }),
+    });
+    const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
+
+    await service.upsertImwebProduct({
+      actorUserId: 'admin_1',
+      importBatchId: 'batch_transaction_update',
+      rawHash: 'hash-transaction-update',
+      mapped: mappedProduct({ externalProductId: '6571', sku: 'TX-UPDATE' }),
+    });
+
+    expect(repo.$transaction).toHaveBeenCalledTimes(1);
+    expect(repo.product.update).toHaveBeenCalled();
+    expect(repo.productOptionValue.deleteMany).toHaveBeenCalled();
+    expect(repo.productOption.deleteMany).toHaveBeenCalled();
+    expect(repo.productExternalMapping.update).toHaveBeenCalled();
+    expect(repo.product.update.mock.invocationCallOrder[0]).toBeGreaterThan(
+      repo.$transaction.mock.invocationCallOrder[0],
+    );
+    expect(repo.productExternalMapping.update.mock.invocationCallOrder[0]).toBeGreaterThan(
+      repo.$transaction.mock.invocationCallOrder[0],
+    );
+  });
 
   it('stores unmapped category provenance and marks the Product as needing review', async () => {
     const repo = buildRepository();
@@ -507,7 +561,8 @@ function buildRepository(input: {
     ? storedProduct({ ...input.existingProduct, name: 'Updated ILLIT Album', stockOnHand: 5 })
     : createdProduct;
 
-  return {
+  const repository = {
+    $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(repository)),
     artist: {
       create: vi.fn(),
       findUnique: vi.fn(async () => null),
@@ -555,4 +610,6 @@ function buildRepository(input: {
     },
     actionLog: { create: vi.fn(async () => ({})) },
   };
+
+  return repository;
 }

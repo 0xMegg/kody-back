@@ -6,7 +6,7 @@ import type {
   ProductSaleStatus,
   StockMovementType,
 } from '@/domain/shared/types.js';
-import type { ActionLogWriter } from '@/application/shared/action-log-writer.js';
+import { ActionLogWriter, type ActionLogRepository } from '@/application/shared/action-log-writer.js';
 import { parseReleaseDate, type ImwebMappedProduct, type ImwebProductPriceStatus, type ImwebWarningIssue } from '@/application/product/imweb-product-importer.js';
 import {
   buildImwebExportWorkbook,
@@ -368,9 +368,7 @@ interface ProductRepository {
   productOptionValue: {
     deleteMany(args: { where: { option: { productId: string } } }): Promise<Record<string, unknown>>;
   };
-  actionLog: {
-    create(args: { data: Record<string, unknown> }): Promise<unknown>;
-  };
+  actionLog: ActionLogRepository;
   importRow: {
     create(args: { data: Record<string, unknown> }): Promise<Record<string, unknown>>;
   };
@@ -996,33 +994,37 @@ export class ProductService {
       if (nextSku !== null && nextSku !== current.sku) {
         await this.assertSkuAvailable(nextSku, current.id);
       }
-      const updated = await this.repository.product.update({
-        where: { id: current.id },
-        data: productData,
-      });
-      await this.replaceImwebProductOptions(updated.id, input.mapped);
+      const updated = await this.repository.$transaction(async (tx) => {
+        const updatedProduct = await tx.product.update({
+          where: { id: current.id },
+          data: productData,
+        });
+        await this.replaceImwebProductOptions(updatedProduct.id, input.mapped, tx);
 
-      const refreshedMapping = await this.repository.productExternalMapping.update({
-        where: { id: mapping.id },
-        data: toImwebMappingRefreshData(input),
-      });
+        const refreshedMapping = await tx.productExternalMapping.update({
+          where: { id: mapping.id },
+          data: toImwebMappingRefreshData(input),
+        });
 
-      await this.writeImwebImportRow(input, {
-        productId: updated.id,
-        mappingId: refreshedMapping.id,
-        outcome: 'UPDATED',
-      });
+        await this.writeImwebImportRow(input, {
+          productId: updatedProduct.id,
+          mappingId: refreshedMapping.id,
+          outcome: 'UPDATED',
+        }, tx);
 
-      await this.actionLogWriter.write({
-        actorUserId: input.actorUserId,
-        actionType: 'PRODUCT_UPDATE',
-        targetType: 'Product',
-        targetId: updated.id,
-        beforeJson: toProductAuditPayload(current),
-        afterJson: toProductAuditPayload(updated),
-        metadataJson: { sourceSystem: 'IMWEB_KR', externalProductId, importBatchId: input.importBatchId ?? null },
-        ipAddress: input.ipAddress,
-        userAgent: input.userAgent,
+        await new ActionLogWriter(tx.actionLog).write({
+          actorUserId: input.actorUserId,
+          actionType: 'PRODUCT_UPDATE',
+          targetType: 'Product',
+          targetId: updatedProduct.id,
+          beforeJson: toProductAuditPayload(current),
+          afterJson: toProductAuditPayload(updatedProduct),
+          metadataJson: { sourceSystem: 'IMWEB_KR', externalProductId, importBatchId: input.importBatchId ?? null },
+          ipAddress: input.ipAddress,
+          userAgent: input.userAgent,
+        });
+
+        return updatedProduct;
       });
 
       return {
@@ -1037,39 +1039,43 @@ export class ProductService {
     if (nextSku !== null) {
       await this.assertSkuAvailable(nextSku);
     }
-    const created = await this.repository.product.create({
-      data: {
-        id: productId,
-        ...productData,
-      },
-    });
-    await this.replaceImwebProductOptions(created.id, input.mapped);
+    const created = await this.repository.$transaction(async (tx) => {
+      const createdProduct = await tx.product.create({
+        data: {
+          id: productId,
+          ...productData,
+        },
+      });
+      await this.replaceImwebProductOptions(createdProduct.id, input.mapped, tx);
 
-    const createdMapping = await this.repository.productExternalMapping.create({
-      data: {
-        productId: created.id,
-        sourceSystem: 'IMWEB_KR',
-        externalProductId,
-        ...toImwebMappingRefreshData(input),
-        firstImportBatchId: input.importBatchId ?? null,
-      },
-    });
+      const createdMapping = await tx.productExternalMapping.create({
+        data: {
+          productId: createdProduct.id,
+          sourceSystem: 'IMWEB_KR',
+          externalProductId,
+          ...toImwebMappingRefreshData(input),
+          firstImportBatchId: input.importBatchId ?? null,
+        },
+      });
 
-    await this.writeImwebImportRow(input, {
-      productId: created.id,
-      mappingId: createdMapping.id,
-      outcome: 'CREATED',
-    });
+      await this.writeImwebImportRow(input, {
+        productId: createdProduct.id,
+        mappingId: createdMapping.id,
+        outcome: 'CREATED',
+      }, tx);
 
-    await this.actionLogWriter.write({
-      actorUserId: input.actorUserId,
-      actionType: 'PRODUCT_CREATE',
-      targetType: 'Product',
-      targetId: created.id,
-      afterJson: toProductAuditPayload(created),
-      metadataJson: { sourceSystem: 'IMWEB_KR', externalProductId, importBatchId: input.importBatchId ?? null },
-      ipAddress: input.ipAddress,
-      userAgent: input.userAgent,
+      await new ActionLogWriter(tx.actionLog).write({
+        actorUserId: input.actorUserId,
+        actionType: 'PRODUCT_CREATE',
+        targetType: 'Product',
+        targetId: createdProduct.id,
+        afterJson: toProductAuditPayload(createdProduct),
+        metadataJson: { sourceSystem: 'IMWEB_KR', externalProductId, importBatchId: input.importBatchId ?? null },
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+      });
+
+      return createdProduct;
     });
 
     return {
@@ -1078,17 +1084,21 @@ export class ProductService {
     };
   }
 
-  private async replaceImwebProductOptions(productId: string, mapped: ImwebMappedProduct): Promise<void> {
+  private async replaceImwebProductOptions(
+    productId: string,
+    mapped: ImwebMappedProduct,
+    repository: ProductRepository = this.repository,
+  ): Promise<void> {
     const optionName = normalizeOptionalString(mapped.optionName);
     const optionValues = mapped.optionValues
       .map((value) => normalizeOptionalString(value))
       .filter((value): value is string => value !== undefined);
 
-    await this.repository.productOptionValue.deleteMany({ where: { option: { productId } } });
-    await this.repository.productOption.deleteMany({ where: { productId } });
+    await repository.productOptionValue.deleteMany({ where: { option: { productId } } });
+    await repository.productOption.deleteMany({ where: { productId } });
     if (!optionName || optionValues.length === 0) return;
 
-    await this.repository.productOption.create({
+    await repository.productOption.create({
       data: {
         productId,
         name: optionName,
@@ -1233,6 +1243,7 @@ export class ProductService {
   private async writeImwebImportRow(
     input: UpsertImwebProductInput,
     result: { productId: string; mappingId: string; outcome: 'CREATED' | 'UPDATED' },
+    repository: ProductRepository = this.repository,
   ): Promise<void> {
     if (!input.importBatchId || !input.importRow) return;
 
@@ -1242,7 +1253,7 @@ export class ProductService {
       (warning) => warning.severity === 'REVIEW' || warning.scope === 'KODY_REVIEW_REQUIRED',
     );
 
-    await this.repository.importRow.create({
+    await repository.importRow.create({
       data: {
         batchId: input.importBatchId,
         sourceSystem: 'IMWEB_KR',
