@@ -365,6 +365,9 @@ interface ProductRepository {
       include: { values: { orderBy: Array<Record<string, 'asc' | 'desc'>> } };
     }): Promise<StoredProductOption[]>;
   };
+  productOptionValue: {
+    deleteMany(args: { where: { option: { productId: string } } }): Promise<Record<string, unknown>>;
+  };
   actionLog: {
     create(args: { data: Record<string, unknown> }): Promise<unknown>;
   };
@@ -1081,6 +1084,7 @@ export class ProductService {
       .map((value) => normalizeOptionalString(value))
       .filter((value): value is string => value !== undefined);
 
+    await this.repository.productOptionValue.deleteMany({ where: { option: { productId } } });
     await this.repository.productOption.deleteMany({ where: { productId } });
     if (!optionName || optionValues.length === 0) return;
 

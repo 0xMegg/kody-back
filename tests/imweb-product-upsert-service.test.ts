@@ -176,7 +176,11 @@ describe('ProductService Imweb import upsert contract', () => {
       }),
     });
 
+    expect(repo.productOptionValue.deleteMany).toHaveBeenCalledWith({ where: { option: { productId: 'KODY-PROD-000001' } } });
     expect(repo.productOption.deleteMany).toHaveBeenCalledWith({ where: { productId: 'KODY-PROD-000001' } });
+    expect(repo.productOptionValue.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      repo.productOption.deleteMany.mock.invocationCallOrder[0],
+    );
     expect(repo.productOption.create).toHaveBeenCalledWith({
       data: {
         productId: 'KODY-PROD-000001',
@@ -531,6 +535,9 @@ function buildRepository(input: {
       deleteMany: vi.fn(async () => ({})),
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async () => []),
+    },
+    productOptionValue: {
+      deleteMany: vi.fn(async () => ({})),
     },
     importRow: {
       create: vi.fn(async () => ({})),
