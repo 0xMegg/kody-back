@@ -13,6 +13,7 @@ import type {
   InboundInput,
   ListProductsInput,
   UpdateProductInput,
+  VariantWriteInput,
 } from '@/application/product/product-service.js';
 import type {
   CategoryMappingSource,
@@ -331,6 +332,10 @@ function parseCreateBody(body: unknown): CreateBody {
     result.categoryReviewStatus = parseCategoryReviewStatus(body.categoryReviewStatus);
   }
 
+  if (body.variants !== undefined) {
+    result.variants = parseVariants(body.variants);
+  }
+
   return result;
 }
 
@@ -417,6 +422,10 @@ function parseUpdateBody(body: unknown): UpdateBody {
     result.categoryReviewStatus = parseCategoryReviewStatus(body.categoryReviewStatus);
   }
 
+  if (body.variants !== undefined) {
+    result.variants = parseVariants(body.variants);
+  }
+
   rejectDirectStockFields(body);
 
   return result;
@@ -428,6 +437,71 @@ function rejectDirectStockFields(body: Record<string, unknown>): void {
       throw new ValidationError(`${field} cannot be set directly; use initialStockOnHand on create or stock movement endpoints after create`);
     }
   }
+}
+
+const VARIANT_STOCK_LIKE_FIELDS = [
+  'stockOnHand',
+  'stockManaged',
+  'stockSnapshot',
+  'orderBasedStock',
+  'shipmentBasedStock',
+  'openOrderedQuantity',
+  'quantity',
+  'stock',
+] as const;
+
+function parseVariants(value: unknown): VariantWriteInput[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError('variants must be an array');
+  }
+  return value.map((entry, index) => parseVariant(entry, index));
+}
+
+function parseVariant(entry: unknown, index: number): VariantWriteInput {
+  if (!isRecord(entry)) {
+    throw new ValidationError(`variants[${index}] must be an object`);
+  }
+
+  for (const field of VARIANT_STOCK_LIKE_FIELDS) {
+    if (entry[field] !== undefined) {
+      throw new ValidationError(`variants[${index}].${field} is not allowed; variants do not carry stock`);
+    }
+  }
+
+  const result: VariantWriteInput = {
+    name: parseRequiredString(entry.name, `variants[${index}].name`),
+    priceKRW: parseNonNegativeDecimal(entry.priceKRW, `variants[${index}].priceKRW`, 4),
+  };
+
+  if (entry.id !== undefined) {
+    result.id = parseRequiredString(entry.id, `variants[${index}].id`);
+  }
+
+  if (entry.sku !== undefined) {
+    result.sku = entry.sku === null ? null : parseRequiredString(entry.sku, `variants[${index}].sku`);
+  }
+
+  if (entry.barcode !== undefined) {
+    result.barcode = entry.barcode === null ? null : parseRequiredString(entry.barcode, `variants[${index}].barcode`);
+  }
+
+  if (entry.optionValueIds !== undefined) {
+    result.optionValueIds = parseStringArray(entry.optionValueIds, `variants[${index}].optionValueIds`);
+  }
+
+  if (entry.saleStartAt !== undefined) {
+    result.saleStartAt = entry.saleStartAt === null ? null : parseString(entry.saleStartAt, `variants[${index}].saleStartAt`);
+  }
+
+  if (entry.saleEndAt !== undefined) {
+    result.saleEndAt = entry.saleEndAt === null ? null : parseString(entry.saleEndAt, `variants[${index}].saleEndAt`);
+  }
+
+  if (entry.position !== undefined) {
+    result.position = parseNonNegativeInteger(entry.position, `variants[${index}].position`);
+  }
+
+  return result;
 }
 
 function parseInboundBody(body: unknown): InboundBody {

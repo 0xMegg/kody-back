@@ -70,6 +70,37 @@ export interface ProductOptionSummary {
   values: ProductOptionValueSummary[];
 }
 
+export interface ProductVariantSummary {
+  id: string;
+  productId: string;
+  name: string;
+  optionValueIds: string[];
+  sku: string | null;
+  barcode: string | null;
+  priceKRW: string;
+  saleStartAt: Date | null;
+  saleEndAt: Date | null;
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Human write-path payload for a single product variant. Stock fields are
+ * intentionally absent: A-1 variants carry no inventory authority.
+ */
+export interface VariantWriteInput {
+  id?: string;
+  name: string;
+  optionValueIds?: string[];
+  sku?: string | null;
+  barcode?: string | null;
+  priceKRW: string | number;
+  saleStartAt?: string | null;
+  saleEndAt?: string | null;
+  position?: number;
+}
+
 export interface ProductSummary {
   id: string;
   artistId: string | null;
@@ -80,6 +111,7 @@ export interface ProductSummary {
   detailHtml: string | null;
   externalMappings?: ProductExternalMappingSummary[];
   options?: ProductOptionSummary[];
+  variants?: ProductVariantSummary[];
   releaseDateText: string | null;
   releaseDate: Date | null;
   weightG: number | null;
@@ -145,6 +177,7 @@ export interface CreateProductInput {
   categoryMappingSource?: CategoryMappingSource;
   sourceCategoryCodes?: string[];
   categoryReviewStatus?: CategoryReviewStatus;
+  variants?: VariantWriteInput[];
   ipAddress?: string;
   userAgent?: string;
 }
@@ -183,6 +216,7 @@ export interface UpdateProductInput {
   categoryMappingSource?: CategoryMappingSource;
   sourceCategoryCodes?: string[];
   categoryReviewStatus?: CategoryReviewStatus;
+  variants?: VariantWriteInput[];
   ipAddress?: string;
   userAgent?: string;
 }
@@ -318,6 +352,34 @@ interface StoredProductOption {
   values: StoredProductOptionValue[];
 }
 
+interface StoredProductVariant {
+  id: string;
+  productId: string;
+  name: string;
+  optionValueIds: string[];
+  sku: string | null;
+  barcode: string | null;
+  priceKRW: string;
+  saleStartAt: Date | null;
+  saleEndAt: Date | null;
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Normalized, validated variant ready to persist. */
+interface NormalizedVariant {
+  id?: string;
+  name: string;
+  optionValueIds: string[];
+  sku: string | null;
+  barcode: string | null;
+  priceKRW: string;
+  saleStartAt: Date | null;
+  saleEndAt: Date | null;
+  position?: number;
+}
+
 interface ProductRepository {
   $transaction<T>(callback: (tx: ProductRepository) => Promise<T>): Promise<T>;
   artist: {
@@ -372,6 +434,20 @@ interface ProductRepository {
   };
   productOptionValue: {
     deleteMany(args: { where: { option: { productId: string } } }): Promise<Record<string, unknown>>;
+  };
+  productVariant?: {
+    findMany(args: {
+      where: { productId: string };
+      orderBy: Array<Record<string, 'asc' | 'desc'>>;
+    }): Promise<StoredProductVariant[]>;
+    create(args: { data: Record<string, unknown> }): Promise<StoredProductVariant>;
+    update(args: {
+      where: { id: string };
+      data: Record<string, unknown>;
+    }): Promise<StoredProductVariant>;
+    deleteMany(args: {
+      where: { id: { in: string[] }; productId: string };
+    }): Promise<Record<string, unknown>>;
   };
   actionLog: ActionLogRepository;
   importRow: {
@@ -497,6 +573,8 @@ export class ProductService {
       input.categoryReviewStatus === undefined
         ? undefined
         : normalizeCategoryReviewStatus(input.categoryReviewStatus);
+    const variantInputs =
+      input.variants === undefined ? undefined : normalizeVariantWriteInputs(input.variants);
 
     if (artistId !== undefined) {
       await this.findArtist(artistId);
@@ -541,9 +619,15 @@ export class ProductService {
       ...(categoryReviewStatus !== undefined ? { categoryReviewStatus } : {}),
     };
 
-    const created = initialStockOnHand !== undefined && initialStockOnHand > 0
-      ? await this.repository.$transaction(async (tx) => {
-          const product = await tx.product.create({ data: productData });
+    const hasInitialStock = initialStockOnHand !== undefined && initialStockOnHand > 0;
+    const hasVariants = variantInputs !== undefined && variantInputs.length > 0;
+
+    let created: StoredProduct;
+    let createdVariants: StoredProductVariant[] | undefined;
+    if (hasInitialStock || hasVariants) {
+      const result = await this.repository.$transaction(async (tx) => {
+        const product = await tx.product.create({ data: productData });
+        if (hasInitialStock) {
           await tx.stockMovement.create({
             data: {
               productId: product.id,
@@ -555,21 +639,44 @@ export class ProductService {
               createdById: input.actorUserId,
             },
           });
-          return product;
-        })
-      : await this.repository.product.create({ data: productData });
+        }
+        const variants =
+          variantInputs === undefined
+            ? undefined
+            : await this.createProductVariants(product.id, variantInputs, tx);
+        return { product, variants };
+      });
+      created = result.product;
+      createdVariants = result.variants;
+    } else {
+      created = await this.repository.product.create({ data: productData });
+      // Present-but-empty variants list still produces an (empty) projection.
+      createdVariants = variantInputs === undefined ? undefined : [];
+    }
 
     await this.actionLogWriter.write({
       actorUserId: input.actorUserId,
       actionType: 'PRODUCT_CREATE',
       targetType: 'Product',
       targetId: created.id,
-      afterJson: toProductAuditPayload(created),
+      afterJson: {
+        ...toProductAuditPayload(created),
+        ...(createdVariants !== undefined
+          ? { variants: createdVariants.map(toVariantAuditPayload) }
+          : {}),
+      },
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
     });
 
-    return toProductSummary(created, undefined, undefined, await this.getLatestUsdRateToKRW());
+    return toProductSummary(
+      created,
+      undefined,
+      undefined,
+      await this.getLatestUsdRateToKRW(),
+      0,
+      createdVariants,
+    );
   }
 
   async listProducts(input: ListProductsInput): Promise<ListProductsResult> {
@@ -672,7 +779,7 @@ export class ProductService {
   async getProduct(productId: string): Promise<ProductSummary> {
     const id = normalizeRequiredString(productId, 'productId');
     const product = await this.findProduct(id);
-    const [externalMappings, options, usdRateToKRW, openOrderedQuantities] = await Promise.all([
+    const [externalMappings, options, variants, usdRateToKRW, openOrderedQuantities] = await Promise.all([
       this.repository.productExternalMapping.findMany({
         where: { productId: id },
         orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
@@ -682,6 +789,12 @@ export class ProductService {
         orderBy: [{ position: 'asc' }, { id: 'asc' }],
         include: { values: { orderBy: [{ position: 'asc' }, { id: 'asc' }] } },
       }),
+      this.repository.productVariant
+        ? this.repository.productVariant.findMany({
+            where: { productId: id },
+            orderBy: [{ position: 'asc' }, { id: 'asc' }],
+          })
+        : Promise.resolve(undefined),
       this.getLatestUsdRateToKRW(),
       this.computeOpenOrderedQuantities([id]),
     ]);
@@ -691,6 +804,7 @@ export class ProductService {
       options,
       usdRateToKRW,
       openOrderedQuantities.get(id) ?? 0,
+      variants,
     );
   }
 
@@ -980,14 +1094,35 @@ export class ProductService {
       }
     }
 
-    if (Object.keys(changes).length === 0) {
+    const variantInputs =
+      input.variants === undefined ? undefined : normalizeVariantWriteInputs(input.variants);
+    const hasFieldChanges = Object.keys(changes).length > 0;
+
+    // Absent variants AND no field changes is a no-op: leave everything untouched.
+    if (!hasFieldChanges && variantInputs === undefined) {
       return toProductSummary(current, undefined, undefined, await this.getLatestUsdRateToKRW());
     }
 
-    const updated = await this.repository.product.update({
-      where: { id: productId },
-      data: changes,
-    });
+    let updated: StoredProduct;
+    let afterVariants: StoredProductVariant[] | undefined;
+    if (variantInputs !== undefined) {
+      const result = await this.repository.$transaction(async (tx) => {
+        const product = hasFieldChanges
+          ? await tx.product.update({ where: { id: productId }, data: changes })
+          : current;
+        const reconcile = await this.reconcileProductVariants(productId, variantInputs, tx);
+        return { product, reconcile };
+      });
+      updated = result.product;
+      afterVariants = result.reconcile.after;
+      beforeJson.variants = result.reconcile.before.map(toVariantAuditPayload);
+      afterJson.variants = result.reconcile.after.map(toVariantAuditPayload);
+    } else {
+      updated = await this.repository.product.update({
+        where: { id: productId },
+        data: changes,
+      });
+    }
 
     await this.actionLogWriter.write({
       actorUserId: input.actorUserId,
@@ -1000,7 +1135,14 @@ export class ProductService {
       userAgent: input.userAgent,
     });
 
-    return toProductSummary(updated, undefined, undefined, await this.getLatestUsdRateToKRW());
+    return toProductSummary(
+      updated,
+      undefined,
+      undefined,
+      await this.getLatestUsdRateToKRW(),
+      0,
+      afterVariants,
+    );
   }
 
   async upsertImwebProduct(input: UpsertImwebProductInput): Promise<UpsertImwebProductResult> {
@@ -1146,6 +1288,98 @@ export class ProductService {
         },
       },
     });
+  }
+
+  // ── Variants ─────────────────────────────────────────────────────────────────
+
+  private variantRepository(repository: ProductRepository): NonNullable<ProductRepository['productVariant']> {
+    if (!repository.productVariant) {
+      throw new DomainRuleError(
+        'PRODUCT_VARIANT_UNSUPPORTED',
+        'product variants are not supported by this repository',
+        500,
+      );
+    }
+    return repository.productVariant;
+  }
+
+  private async createProductVariants(
+    productId: string,
+    inputs: readonly NormalizedVariant[],
+    repository: ProductRepository,
+  ): Promise<StoredProductVariant[]> {
+    const variantRepo = this.variantRepository(repository);
+    const created: StoredProductVariant[] = [];
+    for (let index = 0; index < inputs.length; index += 1) {
+      const stored = await variantRepo.create({
+        data: { productId, ...toVariantWriteData(inputs[index], index) },
+      });
+      created.push(stored);
+    }
+    return sortVariants(created);
+  }
+
+  /**
+   * Deterministic reconcile of variants for a product by id:
+   * create entries without an id, update entries whose id matches an existing
+   * variant for the product, and delete existing variants absent from the
+   * input. An empty input list deletes all variants for the product.
+   */
+  private async reconcileProductVariants(
+    productId: string,
+    inputs: readonly NormalizedVariant[],
+    repository: ProductRepository,
+  ): Promise<{ before: StoredProductVariant[]; after: StoredProductVariant[] }> {
+    const variantRepo = this.variantRepository(repository);
+    const existing = await variantRepo.findMany({
+      where: { productId },
+      orderBy: [{ position: 'asc' }, { id: 'asc' }],
+    });
+    const before = sortVariants(existing);
+    const existingIds = new Set(existing.map((variant) => variant.id));
+
+    const referencedIds = new Set<string>();
+    for (const input of inputs) {
+      if (input.id === undefined) continue;
+      if (referencedIds.has(input.id)) {
+        throw new DomainRuleError('VALIDATION_ERROR', 'variants contains a duplicate id', 400);
+      }
+      referencedIds.add(input.id);
+      if (!existingIds.has(input.id)) {
+        throw new DomainRuleError(
+          'PRODUCT_VARIANT_NOT_FOUND',
+          `variant ${input.id} does not belong to this product`,
+          404,
+        );
+      }
+    }
+
+    const idsToDelete = existing
+      .filter((variant) => !referencedIds.has(variant.id))
+      .map((variant) => variant.id);
+    if (idsToDelete.length > 0) {
+      await variantRepo.deleteMany({ where: { id: { in: idsToDelete }, productId } });
+    }
+
+    for (let index = 0; index < inputs.length; index += 1) {
+      const input = inputs[index];
+      if (input.id === undefined) {
+        await variantRepo.create({
+          data: { productId, ...toVariantWriteData(input, index) },
+        });
+      } else {
+        await variantRepo.update({
+          where: { id: input.id },
+          data: toVariantWriteData(input, index),
+        });
+      }
+    }
+
+    const after = await variantRepo.findMany({
+      where: { productId },
+      orderBy: [{ position: 'asc' }, { id: 'asc' }],
+    });
+    return { before, after: sortVariants(after) };
   }
 
   // ── Stock ──────────────────────────────────────────────────────────────────
@@ -1940,6 +2174,7 @@ function toProductSummary(
   options?: readonly StoredProductOption[],
   usdRateToKRW: string | null = null,
   openOrderedQuantity = 0,
+  variants?: readonly StoredProductVariant[],
 ): ProductSummary {
   const priceKRW = decimalToString(product.priceKRW, 4);
   return {
@@ -1952,6 +2187,7 @@ function toProductSummary(
     detailHtml: product.detailHtml,
     ...(externalMappings !== undefined ? { externalMappings: externalMappings.map(toExternalMappingSummary) } : {}),
     ...(options !== undefined ? { options: options.map(toProductOptionSummary) } : {}),
+    ...(variants !== undefined ? { variants: variants.map(toProductVariantSummary) } : {}),
     releaseDateText: product.releaseDateText,
     releaseDate: product.releaseDate,
     weightG: product.weightG,
@@ -1996,6 +2232,158 @@ function toProductOptionSummary(option: StoredProductOption): ProductOptionSumma
       stockSnapshot: value.stockSnapshot,
     })),
   };
+}
+
+function toProductVariantSummary(variant: StoredProductVariant): ProductVariantSummary {
+  return {
+    id: variant.id,
+    productId: variant.productId,
+    name: variant.name,
+    optionValueIds: [...variant.optionValueIds],
+    sku: variant.sku,
+    barcode: variant.barcode,
+    priceKRW: decimalToString(variant.priceKRW, 4),
+    saleStartAt: variant.saleStartAt,
+    saleEndAt: variant.saleEndAt,
+    position: variant.position,
+    createdAt: variant.createdAt,
+    updatedAt: variant.updatedAt,
+  };
+}
+
+function toVariantAuditPayload(variant: StoredProductVariant): Record<string, unknown> {
+  return {
+    id: variant.id,
+    name: variant.name,
+    optionValueIds: [...variant.optionValueIds],
+    sku: variant.sku,
+    barcode: variant.barcode,
+    priceKRW: decimalToString(variant.priceKRW, 4),
+    saleStartAt: variant.saleStartAt,
+    saleEndAt: variant.saleEndAt,
+    position: variant.position,
+  };
+}
+
+function toVariantWriteData(variant: NormalizedVariant, index: number): Record<string, unknown> {
+  return {
+    name: variant.name,
+    optionValueIds: variant.optionValueIds,
+    sku: variant.sku,
+    barcode: variant.barcode,
+    priceKRW: variant.priceKRW,
+    saleStartAt: variant.saleStartAt,
+    saleEndAt: variant.saleEndAt,
+    position: variant.position ?? index,
+  };
+}
+
+/** Order variants by position asc, then id asc, regardless of repository order. */
+function sortVariants(variants: readonly StoredProductVariant[]): StoredProductVariant[] {
+  return [...variants].sort((a, b) => {
+    if (a.position !== b.position) return a.position - b.position;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+const VARIANT_STOCK_LIKE_FIELDS: readonly string[] = [
+  'stockOnHand',
+  'stockManaged',
+  'stockSnapshot',
+  'orderBasedStock',
+  'shipmentBasedStock',
+  'openOrderedQuantity',
+  'quantity',
+  'stock',
+];
+
+const ISO_DATETIME_PATTERN =
+  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+function normalizeVariantWriteInputs(value: unknown): NormalizedVariant[] {
+  if (!Array.isArray(value)) {
+    throw new DomainRuleError('VALIDATION_ERROR', 'variants must be an array', 400);
+  }
+  return value.map((entry, index) => normalizeVariantWriteInput(entry, index));
+}
+
+function normalizeVariantWriteInput(entry: unknown, index: number): NormalizedVariant {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    throw new DomainRuleError('VALIDATION_ERROR', `variants[${index}] must be an object`, 400);
+  }
+  const record = entry as Record<string, unknown>;
+
+  for (const field of VARIANT_STOCK_LIKE_FIELDS) {
+    if (record[field] !== undefined) {
+      throw new DomainRuleError(
+        'VALIDATION_ERROR',
+        `variants[${index}].${field} is not allowed; variants do not carry stock`,
+        400,
+      );
+    }
+  }
+
+  const id = record.id === undefined ? undefined : normalizeRequiredString(record.id, `variants[${index}].id`);
+  const name = normalizeRequiredString(record.name, `variants[${index}].name`);
+  const priceKRW = normalizeNonNegativeDecimal(record.priceKRW, `variants[${index}].priceKRW`, 4);
+  const sku =
+    record.sku === undefined || record.sku === null
+      ? null
+      : normalizeOptionalString(record.sku) ?? null;
+  const barcode =
+    record.barcode === undefined || record.barcode === null
+      ? null
+      : normalizeOptionalString(record.barcode) ?? null;
+  const optionValueIds =
+    record.optionValueIds === undefined
+      ? []
+      : normalizeStringArray(record.optionValueIds, `variants[${index}].optionValueIds`);
+  const saleStartAt = normalizeOptionalIsoDateTime(record.saleStartAt, `variants[${index}].saleStartAt`);
+  const saleEndAt = normalizeOptionalIsoDateTime(record.saleEndAt, `variants[${index}].saleEndAt`);
+  if (saleStartAt !== null && saleEndAt !== null && saleStartAt.getTime() > saleEndAt.getTime()) {
+    throw new DomainRuleError(
+      'VALIDATION_ERROR',
+      `variants[${index}].saleStartAt must be on or before saleEndAt`,
+      400,
+    );
+  }
+  const position =
+    record.position === undefined
+      ? undefined
+      : normalizeNonNegativeInteger(record.position, `variants[${index}].position`);
+
+  return {
+    ...(id !== undefined ? { id } : {}),
+    name,
+    optionValueIds,
+    sku,
+    barcode,
+    priceKRW,
+    saleStartAt,
+    saleEndAt,
+    ...(position !== undefined ? { position } : {}),
+  };
+}
+
+function normalizeOptionalIsoDateTime(value: unknown, field: string): Date | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be an ISO date string`, 400);
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  if (!ISO_DATETIME_PATTERN.test(trimmed)) {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be an ISO date string`, 400);
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new DomainRuleError('VALIDATION_ERROR', `${field} must be a valid ISO date`, 400);
+  }
+  return parsed;
 }
 
 function datesEqual(left: Date | null, right: Date | null): boolean {
