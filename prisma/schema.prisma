@@ -427,6 +427,7 @@ model Product {
   shipmentItems    ShipmentItem[]
   externalMappings ProductExternalMapping[]
   options          ProductOption[]
+  variants         ProductVariant[]
 
   @@index([artistId])
   @@index([category])
@@ -493,6 +494,29 @@ model ProductOptionValue {
   stockSnapshot Int?
 
   @@index([optionId])
+}
+
+model ProductVariant {
+  id String @id @default(cuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  name           String
+  optionValueIds String[] @default([])
+  sku            String?
+  barcode        String?
+
+  priceKRW Decimal @db.Decimal(15, 4)
+
+  saleStartAt DateTime?
+  saleEndAt   DateTime?
+
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
 }
 
 model ImportBatch {

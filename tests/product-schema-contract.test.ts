@@ -74,14 +74,49 @@ describe('Product schema contract', () => {
     expect(optionValue).not.toContain('stockOnHand');
     expect(() => modelBlock('ImportBatch')).not.toThrow();
     expect(() => modelBlock('ImportRow')).not.toThrow();
-    expect(schema).not.toContain('model ProductVariant');
   });
 
-  it('does not introduce ProductVariant or redirect order/shipment/stock relations away from Product', () => {
-    expect(schema).not.toContain('model ProductVariant');
-    expect(modelBlock('OrderItem')).toContain('product       Product        @relation(fields: [productId], references: [id])');
-    expect(modelBlock('ShipmentItem')).toContain('product   Product   @relation(fields: [productId], references: [id])');
-    expect(modelBlock('StockMovement')).toContain('product   Product @relation(fields: [productId], references: [id])');
+  // A-1a deliberately introduces ProductVariant. This block is the intentional
+  // replacement for the prior "no ProductVariant" tripwire: it asserts the
+  // additive shape AND keeps the no-variant-stock / no-relation-redirect guards.
+  it('adds ProductVariant additively with absolute price and no stock semantics', () => {
+    expect(schema).toContain('model ProductVariant');
+    const variant = modelBlock('ProductVariant');
+    const product = modelBlock('Product');
+
+    expect(product).toContain('variants         ProductVariant[]');
+    expect(variant).toContain(
+      'product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)',
+    );
+    expect(variant).toContain('name           String');
+    expect(variant).toContain('optionValueIds String[] @default([])');
+    expect(variant).toContain('sku            String?');
+    expect(variant).toContain('barcode        String?');
+    expect(variant).toContain('priceKRW Decimal @db.Decimal(15, 4)');
+    expect(variant).toContain('saleStartAt DateTime?');
+    expect(variant).toContain('saleEndAt   DateTime?');
+    expect(variant).toContain('position  Int      @default(0)');
+    expect(variant).toContain('@@index([productId])');
+
+    // No variant stock authority in A-1.
+    expect(variant).not.toContain('stockOnHand');
+    expect(variant).not.toContain('stockManaged');
+    expect(variant).not.toContain('stockSnapshot');
+  });
+
+  it('does not redirect order/shipment/stock relations away from Product or add variantId to ledgers', () => {
+    const orderItem = modelBlock('OrderItem');
+    const shipmentItem = modelBlock('ShipmentItem');
+    const stockMovement = modelBlock('StockMovement');
+
+    expect(orderItem).toContain('product       Product        @relation(fields: [productId], references: [id])');
+    expect(shipmentItem).toContain('product   Product   @relation(fields: [productId], references: [id])');
+    expect(stockMovement).toContain('product   Product @relation(fields: [productId], references: [id])');
+
+    // A-1 keeps variant stock/ledger authority out of order/shipment/stock tables.
+    expect(orderItem).not.toContain('variantId');
+    expect(shipmentItem).not.toContain('variantId');
+    expect(stockMovement).not.toContain('variantId');
   });
 
   it('keeps Imweb price-review state explicit and queryable without making price nullable', () => {

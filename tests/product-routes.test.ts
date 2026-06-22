@@ -1483,6 +1483,299 @@ describe('product routes', () => {
 
     await server.close();
   });
+
+  // ── Variants (A-1a) ─────────────────────────────────────────────────────────
+
+  it('creates a product with variants and returns them in the create projection', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ id: 'KODY-PROD-000020' });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 20,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        variants: [
+          { name: 'MUSIC PLANET', priceKRW: 17000, sku: 'V-MP', optionValueIds: ['ov1', 'ov2'] },
+          { name: 'KTOWN4U', priceKRW: 18000, saleStartAt: '2026-07-01T00:00:00.000Z', saleEndAt: '2026-07-31T00:00:00.000Z' },
+        ],
+      }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.productVariant.create).toHaveBeenCalledTimes(2);
+    expect(body.data.variants).toHaveLength(2);
+    expect(body.data.variants[0]).toMatchObject({
+      name: 'MUSIC PLANET',
+      priceKRW: '17000.0000',
+      sku: 'V-MP',
+      optionValueIds: ['ov1', 'ov2'],
+      position: 0,
+    });
+    expect(body.data.variants[1]).toMatchObject({
+      name: 'KTOWN4U',
+      priceKRW: '18000.0000',
+      position: 1,
+    });
+
+    await server.close();
+  });
+
+  it('rejects nested stock-like fields inside a variant payload', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        variants: [{ name: 'MUSIC PLANET', priceKRW: 17000, stockOnHand: 5 }],
+      }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toContain('variants[0].stockOnHand is not allowed');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects a variant sale window where saleStartAt is after saleEndAt', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        variants: [{
+          name: 'MUSIC PLANET',
+          priceKRW: 17000,
+          saleStartAt: '2026-08-01T00:00:00.000Z',
+          saleEndAt: '2026-07-01T00:00:00.000Z',
+        }],
+      }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toContain('saleStartAt must be on or before saleEndAt');
+
+    await server.close();
+  });
+
+  it('rejects a negative variant price', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        variants: [{ name: 'MUSIC PLANET', priceKRW: -1 }],
+      }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toContain('variants[0].priceKRW must be a non-negative decimal');
+
+    await server.close();
+  });
+
+  it('returns variants on GET /products/:id ordered by position then id', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({
+      actor,
+      products: [buildStoredProduct()],
+      productVariants: [
+        buildStoredProductVariant({ id: 'variant_b', name: 'KTOWN4U', position: 1, priceKRW: '18000.0000' }),
+        buildStoredProductVariant({ id: 'variant_a', name: 'MUSIC PLANET', position: 0, priceKRW: '17000.0000' }),
+      ],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.data.variants.map((v: { id: string }) => v.id)).toEqual(['variant_a', 'variant_b']);
+
+    await server.close();
+  });
+
+  it('does not project variants on GET /products list', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({
+      actor,
+      products: [buildStoredProduct()],
+      productVariants: [buildStoredProductVariant()],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.data.items[0]).not.toHaveProperty('variants');
+    expect(prisma.productVariant.findMany).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('reconciles variants on PATCH: create new, update matched, delete missing', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({
+      actor,
+      products: [product],
+      updatedProduct: product,
+      productVariants: [
+        buildStoredProductVariant({ id: 'variant_keep', name: 'OLD NAME', position: 0 }),
+        buildStoredProductVariant({ id: 'variant_drop', name: 'DROP ME', position: 1 }),
+      ],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        variants: [
+          { id: 'variant_keep', name: 'NEW NAME', priceKRW: 19000 },
+          { name: 'BRAND NEW', priceKRW: 20000 },
+        ],
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.productVariant.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['variant_drop'] }, productId: PRODUCT_ID },
+    });
+    expect(prisma.productVariant.update).toHaveBeenCalledTimes(1);
+    expect(prisma.productVariant.create).toHaveBeenCalledTimes(1);
+    const names = body.data.variants.map((v: { name: string }) => v.name).sort();
+    expect(names).toEqual(['BRAND NEW', 'NEW NAME']);
+
+    await server.close();
+  });
+
+  it('PATCH with empty variants array deletes all variants for the product', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({
+      actor,
+      products: [product],
+      updatedProduct: product,
+      productVariants: [
+        buildStoredProductVariant({ id: 'variant_1', position: 0 }),
+        buildStoredProductVariant({ id: 'variant_2', position: 1 }),
+      ],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { variants: [] },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.productVariant.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['variant_1', 'variant_2'] }, productId: PRODUCT_ID },
+    });
+    expect(body.data.variants).toEqual([]);
+
+    await server.close();
+  });
+
+  it('PATCH without variants leaves variants untouched', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({
+      actor,
+      products: [product],
+      updatedProduct: buildStoredProduct({ name: 'Renamed' }),
+      productVariants: [buildStoredProductVariant({ id: 'variant_1' })],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { name: 'Renamed' },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.productVariant.findMany).not.toHaveBeenCalled();
+    expect(prisma.productVariant.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.productVariant.create).not.toHaveBeenCalled();
+    expect(body.data).not.toHaveProperty('variants');
+
+    await server.close();
+  });
+
+  it('PATCH referencing a variant id from another product is rejected', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({
+      actor,
+      products: [product],
+      updatedProduct: product,
+      productVariants: [buildStoredProductVariant({ id: 'variant_1' })],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { variants: [{ id: 'variant_other', name: 'X', priceKRW: 1000 }] },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe('PRODUCT_VARIANT_NOT_FOUND');
+
+    await server.close();
+  });
 });
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -1652,6 +1945,26 @@ function buildStoredProductOption(overrides: Partial<{
   };
 }
 
+function buildStoredProductVariant(overrides: Partial<{
+  id: string; productId: string; name: string; optionValueIds: string[]; sku: string | null; barcode: string | null;
+  priceKRW: string; saleStartAt: Date | null; saleEndAt: Date | null; position: number;
+}> = {}) {
+  return {
+    id: overrides.id ?? 'variant_1',
+    productId: overrides.productId ?? PRODUCT_ID,
+    name: overrides.name ?? 'MUSIC PLANET',
+    optionValueIds: overrides.optionValueIds ?? [],
+    sku: overrides.sku === undefined ? null : overrides.sku,
+    barcode: overrides.barcode === undefined ? null : overrides.barcode,
+    priceKRW: overrides.priceKRW ?? '15000.0000',
+    saleStartAt: overrides.saleStartAt === undefined ? null : overrides.saleStartAt,
+    saleEndAt: overrides.saleEndAt === undefined ? null : overrides.saleEndAt,
+    position: overrides.position ?? 0,
+    createdAt: new Date('2026-06-23T00:00:00Z'),
+    updatedAt: new Date('2026-06-23T00:00:00Z'),
+  };
+}
+
 interface PrismaInput {
   actor: ReturnType<typeof buildActor>;
   artists?: ReturnType<typeof buildStoredArtist>[];
@@ -1659,6 +1972,7 @@ interface PrismaInput {
   movements?: ReturnType<typeof buildStoredMovement>[];
   externalMappings?: ReturnType<typeof buildStoredExternalMapping>[];
   productOptions?: ReturnType<typeof buildStoredProductOption>[];
+  productVariants?: ReturnType<typeof buildStoredProductVariant>[];
   createdProduct?: ReturnType<typeof buildStoredProduct>;
   updatedProduct?: ReturnType<typeof buildStoredProduct>;
   createdMovement?: ReturnType<typeof buildStoredMovement>;
@@ -1677,6 +1991,8 @@ function buildPrisma(input: PrismaInput) {
   const movements = input.movements ?? [];
   const externalMappings = input.externalMappings ?? [];
   const productOptions = input.productOptions ?? [];
+  const productVariants = [...(input.productVariants ?? [])];
+  let variantSeq = productVariants.length;
   const orderItems = input.orderItems ?? [];
 
   const prisma = {
@@ -1742,6 +2058,48 @@ function buildPrisma(input: PrismaInput) {
       deleteMany: vi.fn(async () => ({})),
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async (args: { where: { productId: string } }) => productOptions.filter((option) => option.productId === args.where.productId)),
+    },
+    productVariant: {
+      findMany: vi.fn(async (args: { where: { productId: string } }) =>
+        productVariants
+          .filter((variant) => variant.productId === args.where.productId)
+          .sort((a, b) => (a.position !== b.position ? a.position - b.position : a.id < b.id ? -1 : 1)),
+      ),
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+        variantSeq += 1;
+        const data = args.data;
+        const created = {
+          id: (data.id as string | undefined) ?? `variant_new_${variantSeq}`,
+          productId: data.productId as string,
+          name: data.name as string,
+          optionValueIds: (data.optionValueIds as string[] | undefined) ?? [],
+          sku: (data.sku as string | null | undefined) ?? null,
+          barcode: (data.barcode as string | null | undefined) ?? null,
+          priceKRW: data.priceKRW as string,
+          saleStartAt: (data.saleStartAt as Date | null | undefined) ?? null,
+          saleEndAt: (data.saleEndAt as Date | null | undefined) ?? null,
+          position: (data.position as number | undefined) ?? 0,
+          createdAt: new Date('2026-06-23T00:00:00Z'),
+          updatedAt: new Date('2026-06-23T00:00:00Z'),
+        };
+        productVariants.push(created);
+        return created;
+      }),
+      update: vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => {
+        const existing = productVariants.find((variant) => variant.id === args.where.id);
+        if (!existing) throw new Error(`variant ${args.where.id} not found`);
+        Object.assign(existing, args.data);
+        return existing;
+      }),
+      deleteMany: vi.fn(async (args: { where: { id: { in: string[] }; productId: string } }) => {
+        const ids = new Set(args.where.id.in);
+        for (let i = productVariants.length - 1; i >= 0; i -= 1) {
+          if (ids.has(productVariants[i].id) && productVariants[i].productId === args.where.productId) {
+            productVariants.splice(i, 1);
+          }
+        }
+        return {};
+      }),
     },
     stockMovement: {
       create: vi.fn(async () => {
