@@ -423,7 +423,7 @@ function parseUpdateBody(body: unknown): UpdateBody {
 }
 
 function rejectDirectStockFields(body: Record<string, unknown>): void {
-  for (const field of ['stockOnHand', 'orderBasedStock', 'shipmentBasedStock'] as const) {
+  for (const field of ['stockOnHand', 'orderBasedStock', 'shipmentBasedStock', 'openOrderedQuantity'] as const) {
     if (body[field] !== undefined) {
       throw new ValidationError(`${field} cannot be set directly; use initialStockOnHand on create or stock movement endpoints after create`);
     }

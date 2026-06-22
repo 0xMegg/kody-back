@@ -4,9 +4,11 @@ import { issueAccessToken } from '@/domain/auth/tokens.js';
 import type {
   CategoryMappingSource,
   CategoryReviewStatus,
+  OrderStatus,
   ProductCategory,
   ProductSaleStatus,
   Role,
+  ShipmentItemStatus,
   StockMovementType,
   UserStatus,
 } from '@/domain/shared/types.js';
@@ -1363,6 +1365,124 @@ describe('product routes', () => {
 
     await server.close();
   });
+
+  // ── openOrderedQuantity read-only aggregate ────────────────────────────────
+
+  it('exposes read-only openOrderedQuantity from confirmed unfulfilled order items on GET /products/:id', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({ stockOnHand: 30, orderBasedStock: 25, shipmentBasedStock: 5 });
+    const orderItems = [
+      { productId: PRODUCT_ID, quantity: 10, shipmentStatus: 'NOT_SHIPPED' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+      { productId: PRODUCT_ID, quantity: 4, shipmentStatus: 'PENDING' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+      // shipped/completed item is excluded from the open aggregate
+      { productId: PRODUCT_ID, quantity: 7, shipmentStatus: 'COMPLETED' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+      // PENDING order is excluded
+      { productId: PRODUCT_ID, quantity: 9, shipmentStatus: 'NOT_SHIPPED' as ShipmentItemStatus, orderStatus: 'PENDING' as OrderStatus },
+      // SUSPENDED order is excluded
+      { productId: PRODUCT_ID, quantity: 3, shipmentStatus: 'NOT_SHIPPED' as ShipmentItemStatus, orderStatus: 'SUSPENDED' as OrderStatus },
+    ];
+    const prisma = buildPrisma({ actor, products: [product], orderItems });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.data.openOrderedQuantity).toBe(14);
+    // existing event-derived stock counters remain present alongside the new aggregate
+    expect(body.data.stockOnHand).toBe(30);
+    expect(body.data.orderBasedStock).toBe(25);
+    expect(body.data.shipmentBasedStock).toBe(5);
+
+    await server.close();
+  });
+
+  it('aggregates openOrderedQuantity per product on GET /products', async () => {
+    const actor = buildActor();
+    const products = [
+      buildStoredProduct({ id: 'P-ATEZ-001' }),
+      buildStoredProduct({ id: 'P-ATEZ-002' }),
+    ];
+    const orderItems = [
+      { productId: 'P-ATEZ-001', quantity: 5, shipmentStatus: 'NOT_SHIPPED' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+      { productId: 'P-ATEZ-001', quantity: 2, shipmentStatus: 'PENDING' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+      { productId: 'P-ATEZ-002', quantity: 8, shipmentStatus: 'NOT_SHIPPED' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+      { productId: 'P-ATEZ-002', quantity: 6, shipmentStatus: 'COMPLETED' as ShipmentItemStatus, orderStatus: 'CONFIRMED' as OrderStatus },
+    ];
+    const prisma = buildPrisma({ actor, products, orderItems });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    const byId = Object.fromEntries(
+      body.data.items.map((item: { id: string; openOrderedQuantity: number }) => [item.id, item.openOrderedQuantity]),
+    );
+    expect(byId['P-ATEZ-001']).toBe(7);
+    expect(byId['P-ATEZ-002']).toBe(8);
+
+    await server.close();
+  });
+
+  it('defaults openOrderedQuantity to 0 when no confirmed open orders exist', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.data.openOrderedQuantity).toBe(0);
+
+    await server.close();
+  });
+
+  it('rejects direct openOrderedQuantity edits on Product create and update payloads', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()], products: [buildStoredProduct()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const createResponse = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({ openOrderedQuantity: 99 }),
+    });
+    const updateResponse = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { openOrderedQuantity: 99 },
+    });
+
+    expect(createResponse.statusCode).toBe(400);
+    expect(createResponse.json().error.message).toContain('openOrderedQuantity cannot be set directly');
+    expect(updateResponse.statusCode).toBe(400);
+    expect(updateResponse.json().error.message).toContain('openOrderedQuantity cannot be set directly');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.product.update).not.toHaveBeenCalled();
+
+    await server.close();
+  });
 });
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -1543,6 +1663,12 @@ interface PrismaInput {
   updatedProduct?: ReturnType<typeof buildStoredProduct>;
   createdMovement?: ReturnType<typeof buildStoredMovement>;
   nextProductSeq?: number;
+  orderItems?: Array<{
+    productId: string;
+    quantity: number;
+    shipmentStatus: ShipmentItemStatus;
+    orderStatus: OrderStatus;
+  }>;
 }
 
 function buildPrisma(input: PrismaInput) {
@@ -1551,6 +1677,7 @@ function buildPrisma(input: PrismaInput) {
   const movements = input.movements ?? [];
   const externalMappings = input.externalMappings ?? [];
   const productOptions = input.productOptions ?? [];
+  const orderItems = input.orderItems ?? [];
 
   const prisma = {
     user: {
@@ -1622,6 +1749,32 @@ function buildPrisma(input: PrismaInput) {
         return input.createdMovement;
       }),
       findMany: vi.fn(async () => movements),
+    },
+    orderItem: {
+      groupBy: vi.fn(async (args: {
+        by: ['productId'];
+        where: {
+          productId: { in: string[] };
+          order: { status: OrderStatus };
+          shipmentStatus: { not: ShipmentItemStatus };
+        };
+        _sum: { quantity: true };
+      }) => {
+        const ids = args.where.productId.in;
+        const wantedOrderStatus = args.where.order.status;
+        const excludedShipmentStatus = args.where.shipmentStatus.not;
+        const totals = new Map<string, number>();
+        for (const item of orderItems) {
+          if (!ids.includes(item.productId)) continue;
+          if (item.orderStatus !== wantedOrderStatus) continue;
+          if (item.shipmentStatus === excludedShipmentStatus) continue;
+          totals.set(item.productId, (totals.get(item.productId) ?? 0) + item.quantity);
+        }
+        return [...totals.entries()].map(([productId, quantity]) => ({
+          productId,
+          _sum: { quantity },
+        }));
+      }),
     },
     refreshToken: {
       findUnique: vi.fn(async () => null),

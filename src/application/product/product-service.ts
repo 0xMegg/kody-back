@@ -2,8 +2,10 @@ import { DomainRuleError } from '@/domain/shared/errors.js';
 import type {
   CategoryMappingSource,
   CategoryReviewStatus,
+  OrderStatus,
   ProductCategory,
   ProductSaleStatus,
+  ShipmentItemStatus,
   StockMovementType,
 } from '@/domain/shared/types.js';
 import { ActionLogWriter, type ActionLogRepository } from '@/application/shared/action-log-writer.js';
@@ -26,6 +28,8 @@ const DEFAULT_LIST_LIMIT = 20;
 const MIN_LIST_LIMIT = 1;
 const MAX_LIST_LIMIT = 100;
 const DRY_RUN_EXISTING_PRODUCT_SCAN_LIMIT = 10000;
+const OPEN_ORDER_STATUS: OrderStatus = 'CONFIRMED';
+const FULFILLED_SHIPMENT_STATUS: ShipmentItemStatus = 'COMPLETED';
 
 type ProductPriceStatus = ImwebProductPriceStatus;
 
@@ -91,6 +95,7 @@ export interface ProductSummary {
   stockOnHand: number;
   orderBasedStock: number;
   shipmentBasedStock: number;
+  openOrderedQuantity: number;
   saleStatus: ProductSaleStatus;
   isDisplayed: boolean;
   displayStatus: ProductDisplayStatus;
@@ -386,6 +391,17 @@ interface ProductRepository {
       orderBy: Array<Record<string, 'asc' | 'desc'>>;
     }): Promise<StoredStockMovement[]>;
   };
+  orderItem?: {
+    groupBy(args: {
+      by: ['productId'];
+      where: {
+        productId: { in: string[] };
+        order: { status: OrderStatus };
+        shipmentStatus: { not: ShipmentItemStatus };
+      };
+      _sum: { quantity: true };
+    }): Promise<Array<{ productId: string; _sum: { quantity: number | null } }>>;
+  };
   fxRate?: {
     findFirst(args: {
       where: Record<string, unknown>;
@@ -590,10 +606,21 @@ export class ProductService {
     const sliced = hasMore ? items.slice(0, limit) : items;
     const nextCursor = hasMore ? sliced[sliced.length - 1].id : null;
 
-    const usdRateToKRW = await this.getLatestUsdRateToKRW();
+    const [usdRateToKRW, openOrderedQuantities] = await Promise.all([
+      this.getLatestUsdRateToKRW(),
+      this.computeOpenOrderedQuantities(sliced.map((product) => product.id)),
+    ]);
 
     return {
-      items: sliced.map((product) => toProductSummary(product, undefined, undefined, usdRateToKRW)),
+      items: sliced.map((product) =>
+        toProductSummary(
+          product,
+          undefined,
+          undefined,
+          usdRateToKRW,
+          openOrderedQuantities.get(product.id) ?? 0,
+        ),
+      ),
       nextCursor,
     };
   }
@@ -645,7 +672,7 @@ export class ProductService {
   async getProduct(productId: string): Promise<ProductSummary> {
     const id = normalizeRequiredString(productId, 'productId');
     const product = await this.findProduct(id);
-    const [externalMappings, options, usdRateToKRW] = await Promise.all([
+    const [externalMappings, options, usdRateToKRW, openOrderedQuantities] = await Promise.all([
       this.repository.productExternalMapping.findMany({
         where: { productId: id },
         orderBy: [{ sourceSystem: 'asc' }, { externalProductId: 'asc' }],
@@ -656,8 +683,15 @@ export class ProductService {
         include: { values: { orderBy: [{ position: 'asc' }, { id: 'asc' }] } },
       }),
       this.getLatestUsdRateToKRW(),
+      this.computeOpenOrderedQuantities([id]),
     ]);
-    return toProductSummary(product, externalMappings, options, usdRateToKRW);
+    return toProductSummary(
+      product,
+      externalMappings,
+      options,
+      usdRateToKRW,
+      openOrderedQuantities.get(id) ?? 0,
+    );
   }
 
   async correctExternalMapping(input: CorrectExternalMappingInput): Promise<CorrectExternalMappingResult> {
@@ -1295,6 +1329,38 @@ export class ProductService {
     return product;
   }
 
+  /**
+   * Read-only aggregate of confirmed, still-open (unfulfilled) order quantity
+   * per product, derived from order data rather than the event-sourced
+   * orderBasedStock counter. Products with no matching open order rows default
+   * to 0.
+   */
+  private async computeOpenOrderedQuantities(
+    productIds: readonly string[],
+  ): Promise<Map<string, number>> {
+    const totals = new Map<string, number>();
+    if (productIds.length === 0) return totals;
+
+    const orderItem = this.repository.orderItem;
+    if (!orderItem) return totals;
+
+    const grouped = await orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        productId: { in: [...productIds] },
+        order: { status: OPEN_ORDER_STATUS },
+        shipmentStatus: { not: FULFILLED_SHIPMENT_STATUS },
+      },
+      _sum: { quantity: true },
+    });
+
+    for (const row of grouped) {
+      totals.set(row.productId, row._sum.quantity ?? 0);
+    }
+
+    return totals;
+  }
+
   private async assertSkuAvailable(sku: string, exceptProductId?: string): Promise<void> {
     const existing = await this.repository.product.findFirst({ where: { sku } });
     if (existing && existing.id !== exceptProductId) {
@@ -1873,6 +1939,7 @@ function toProductSummary(
   externalMappings?: readonly StoredProductExternalMapping[],
   options?: readonly StoredProductOption[],
   usdRateToKRW: string | null = null,
+  openOrderedQuantity = 0,
 ): ProductSummary {
   const priceKRW = decimalToString(product.priceKRW, 4);
   return {
@@ -1900,6 +1967,7 @@ function toProductSummary(
     stockOnHand: product.stockOnHand,
     orderBasedStock: product.orderBasedStock,
     shipmentBasedStock: product.shipmentBasedStock,
+    openOrderedQuantity,
     saleStatus: product.saleStatus,
     isDisplayed: product.isDisplayed,
     displayStatus: deriveDisplayStatus(product.saleStatus, product.isDisplayed),
