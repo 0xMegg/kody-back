@@ -85,10 +85,31 @@ export interface DryRunImwebProductRowsResult {
   items: ImwebDryRunItem[];
 }
 
-const CATEGORY_BY_IMWEB_CATEGORY_ID_PREFIX: readonly [RegExp, ProductCategory][] = [
-  [/CATE(?:10|14|21|44|48|64|65|70)\b/, 'ALBUM'],
-  [/CATE(?:29)\b/, 'GOODS'],
+type ApprovedImwebCategoryMapping = {
+  readonly code: string;
+  readonly category: ProductCategory;
+  readonly approvalSource: 'legacy-importer-whitelist';
+  readonly rationale: string;
+};
+
+// G4c-2 policy: only explicitly whitelisted source codes may become EXACT mappings.
+// Historical dry-run/category-majority evidence is review input only; do not add CATE*
+// bridge entries here without Imweb admin-export evidence or explicit per-code operator approval.
+const APPROVED_IMWEB_CATEGORY_MAPPINGS: readonly ApprovedImwebCategoryMapping[] = [
+  { code: 'CATE10', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE14', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE21', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE44', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE48', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE64', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE65', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE70', category: 'ALBUM', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
+  { code: 'CATE29', category: 'GOODS', approvalSource: 'legacy-importer-whitelist', rationale: 'pre-G4c exact importer rule preserved without expanding bridge scope' },
 ];
+
+const CATEGORY_BY_IMWEB_CATEGORY_ID = new Map(
+  APPROVED_IMWEB_CATEGORY_MAPPINGS.map((mapping) => [mapping.code, mapping.category] as const),
+);
 
 export function parseImwebProductRow(
   row: Record<string, unknown>,
@@ -416,9 +437,9 @@ function mapProductCategory(
   categoryIds: readonly string[],
   warnings: ImwebWarningIssue[],
 ): { category: ProductCategory | null; source: ImwebCategoryMappingSource } {
-  const joined = categoryIds.join(',');
-  for (const [pattern, category] of CATEGORY_BY_IMWEB_CATEGORY_ID_PREFIX) {
-    if (pattern.test(joined)) return { category, source: 'EXACT' };
+  for (const categoryId of categoryIds) {
+    const category = CATEGORY_BY_IMWEB_CATEGORY_ID.get(categoryId);
+    if (category) return { category, source: 'EXACT' };
   }
   warnings.push(makeWarning(
     'CATEGORY_UNMAPPED',
