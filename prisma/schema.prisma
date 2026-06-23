@@ -8,7 +8,7 @@
 //   OrderStatus:        주문대기→PENDING, 주문완료→CONFIRMED, 주문중지→SUSPENDED
 //   ShipmentStatus:     출고대기→PENDING, 출고완료→COMPLETED
 //   ShipmentItemStatus: 미출고→NOT_SHIPPED, 출고대기→PENDING, 출고완료→COMPLETED
-//   ProductCategory:    앨범→ALBUM, 포토카드→PHOTOCARD, 굿즈→GOODS
+//   ProductCategory:    앨범→ALBUM, 포토카드→PHOTOCARD, 굿즈→GOODS, 잡지→MAGAZINE, 시즌그리팅→SEASON_GREETINGS
 //   DepositSource:      농협외환→NONGHYUP, 하나외환→HANA, Paypal→PAYPAL, Payoneer→PAYONEER
 // =============================================================================
 
@@ -51,8 +51,33 @@ enum ShipmentItemStatus {
 
 enum ProductCategory {
   ALBUM
+  /// Deprecated compatibility value. New photo-card products should use GOODS + OFFICIAL_GOODS + PHOTO_CARD.
   PHOTOCARD
   GOODS
+  MAGAZINE
+  SEASON_GREETINGS
+}
+
+enum ProductCategoryMinor {
+  BOY_GROUP
+  GIRL_GROUP
+  SOLO
+  JAPANESE_ALBUM
+  OST
+  OFFICIAL_GOODS
+  FANDOM_GOODS
+}
+
+enum ProductItemType {
+  LIGHT_STICK
+  MD
+  PHOTOBOOK
+  PHOTO_CARD
+  MUSIC_SHEET
+  SANRIO
+  HOLDER
+  COLLECT_BOOK
+  STICKER
 }
 
 enum SourceSystem {
@@ -385,6 +410,8 @@ model Product {
   artist   Artist? @relation(fields: [artistId], references: [id], onDelete: Restrict)
 
   category              ProductCategory?
+  categoryMinor         ProductCategoryMinor?
+  itemType              ProductItemType?
   categoryReviewStatus  CategoryReviewStatus  @default(PENDING)
   categoryMappingSource CategoryMappingSource @default(EXACT)
   sourceCategoryCodes   String[]              @default([])
@@ -431,6 +458,8 @@ model Product {
 
   @@index([artistId])
   @@index([category])
+  @@index([categoryMinor])
+  @@index([itemType])
   @@index([categoryMappingSource])
   @@index([sku])
   @@index([barcode])

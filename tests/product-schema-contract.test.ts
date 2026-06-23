@@ -11,6 +11,13 @@ const migrationSql = readFileSync(
   ),
   'utf8',
 );
+const taxonomyMigrationSql = readFileSync(
+  resolve(
+    process.cwd(),
+    'prisma/migrations/20260623184700_product_taxonomy_g4c/migration.sql',
+  ),
+  'utf8',
+);
 
 function modelBlock(name: string): string {
   const match = schema.match(new RegExp(`model ${name} \\{[\\s\\S]*?\\n\\}`));
@@ -56,9 +63,38 @@ describe('Product schema contract', () => {
     expect(product).toMatch(/^\s+releaseDateText\s+String\?/m);
     expect(product).toMatch(/^\s+releaseDate\s+DateTime\?/m);
     expect(product).toMatch(/^\s+category\s+ProductCategory\?/m);
+    expect(product).toMatch(/^\s+categoryMinor\s+ProductCategoryMinor\?/m);
+    expect(product).toMatch(/^\s+itemType\s+ProductItemType\?/m);
     expect(product).toContain('sourceCategoryCodes   String[]              @default([])');
     expect(product).toContain('categoryMappingSource CategoryMappingSource @default(EXACT)');
     expect(product).toContain('categoryReviewStatus  CategoryReviewStatus  @default(PENDING)');
+  });
+
+
+
+  it('adds G4c taxonomy contract additively without migrating PHOTOCARD rows', () => {
+    const product = modelBlock('Product');
+
+    expect(schema).toContain('enum ProductCategory');
+    expect(schema).toContain('PHOTOCARD');
+    expect(schema).toContain('MAGAZINE');
+    expect(schema).toContain('SEASON_GREETINGS');
+    expect(schema).toContain('enum ProductCategoryMinor');
+    expect(schema).toContain('BOY_GROUP');
+    expect(schema).toContain('OFFICIAL_GOODS');
+    expect(schema).toContain('enum ProductItemType');
+    expect(schema).toContain('PHOTO_CARD');
+    expect(product).toContain('categoryMinor         ProductCategoryMinor?');
+    expect(product).toContain('itemType              ProductItemType?');
+    expect(product).toContain('@@index([categoryMinor])');
+    expect(product).toContain('@@index([itemType])');
+
+    expect(taxonomyMigrationSql).toContain(`ALTER TYPE "ProductCategory" ADD VALUE IF NOT EXISTS 'MAGAZINE'`);
+    expect(taxonomyMigrationSql).toContain('CREATE TYPE "ProductCategoryMinor" AS ENUM');
+    expect(taxonomyMigrationSql).toContain('ALTER TABLE "Product" ADD COLUMN "categoryMinor" "ProductCategoryMinor"');
+    expect(taxonomyMigrationSql).not.toContain('UPDATE "Product"');
+    expect(taxonomyMigrationSql).not.toContain('DELETE FROM');
+    expect(taxonomyMigrationSql).not.toContain('DROP VALUE');
   });
 
   it('adds approved import, option, and KODY product sequence models without variant stock semantics', () => {

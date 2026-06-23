@@ -4,6 +4,8 @@ import type {
   CategoryReviewStatus,
   OrderStatus,
   ProductCategory,
+  ProductCategoryMinor,
+  ProductItemType,
   ProductSaleStatus,
   ShipmentItemStatus,
   StockMovementType,
@@ -19,7 +21,12 @@ import {
   type ProductWorkbookUploadInput,
 } from '@/application/product/product-excel-workflow.js';
 
-const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
+const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS', 'MAGAZINE', 'SEASON_GREETINGS'];
+const PRODUCT_CATEGORY_MINORS: readonly ProductCategoryMinor[] = ['BOY_GROUP', 'GIRL_GROUP', 'SOLO', 'JAPANESE_ALBUM', 'OST', 'OFFICIAL_GOODS', 'FANDOM_GOODS'];
+const PRODUCT_ITEM_TYPES: readonly ProductItemType[] = ['LIGHT_STICK', 'MD', 'PHOTOBOOK', 'PHOTO_CARD', 'MUSIC_SHEET', 'SANRIO', 'HOLDER', 'COLLECT_BOOK', 'STICKER'];
+const ALBUM_CATEGORY_MINORS: readonly ProductCategoryMinor[] = ['BOY_GROUP', 'GIRL_GROUP', 'SOLO', 'JAPANESE_ALBUM', 'OST'];
+const OFFICIAL_GOODS_ITEM_TYPES: readonly ProductItemType[] = ['LIGHT_STICK', 'MD', 'PHOTOBOOK', 'PHOTO_CARD', 'MUSIC_SHEET'];
+const FANDOM_GOODS_ITEM_TYPES: readonly ProductItemType[] = ['SANRIO', 'HOLDER', 'COLLECT_BOOK', 'STICKER'];
 const PRODUCT_SALE_STATUSES: readonly ProductSaleStatus[] = ['ON_SALE', 'OFF_SALE', 'SOLD_OUT', 'DRAFT'];
 const CATEGORY_MAPPING_SOURCES: readonly CategoryMappingSource[] = ['EXACT', 'FALLBACK', 'MANUAL'];
 const CATEGORY_REVIEW_STATUSES: readonly CategoryReviewStatus[] = ['PENDING', 'MAPPED', 'NEEDS_REVIEW'];
@@ -105,6 +112,8 @@ export interface ProductSummary {
   id: string;
   artistId: string | null;
   category: ProductCategory | null;
+  categoryMinor?: ProductCategoryMinor | null;
+  itemType?: ProductItemType | null;
   name: string;
   labelName: string | null;
   thumbnailUrl: string | null;
@@ -160,6 +169,8 @@ export interface CreateProductInput {
   actorUserId: string;
   artistId?: string;
   category?: ProductCategory;
+  categoryMinor?: ProductCategoryMinor | null;
+  itemType?: ProductItemType | null;
   name: string;
   labelName?: string | null;
   thumbnailUrl?: string | null;
@@ -185,6 +196,8 @@ export interface CreateProductInput {
 export interface ListProductsInput {
   artistId?: string;
   category?: ProductCategory;
+  categoryMinor?: ProductCategoryMinor;
+  itemType?: ProductItemType;
   q?: string;
   limit?: number;
   cursor?: string;
@@ -200,6 +213,8 @@ export interface UpdateProductInput {
   productId: string;
   artistId?: string | null;
   category?: ProductCategory | null;
+  categoryMinor?: ProductCategoryMinor | null;
+  itemType?: ProductItemType | null;
   name?: string;
   labelName?: string | null;
   thumbnailUrl?: string | null;
@@ -284,6 +299,8 @@ interface StoredProduct {
   id: string;
   artistId: string | null;
   category: ProductCategory | null;
+  categoryMinor: ProductCategoryMinor | null;
+  itemType: ProductItemType | null;
   name: string;
   labelName: string | null;
   thumbnailUrl: string | null;
@@ -524,6 +541,9 @@ export class ProductService {
   async createProduct(input: CreateProductInput): Promise<ProductSummary> {
     const artistId = input.artistId === undefined ? undefined : normalizeRequiredString(input.artistId, 'artistId');
     const category = input.category === undefined ? undefined : normalizeCategory(input.category);
+    const categoryMinor = input.categoryMinor === undefined ? undefined : normalizeNullableCategoryMinor(input.categoryMinor);
+    const itemType = input.itemType === undefined ? undefined : normalizeNullableItemType(input.itemType);
+    validateProductTaxonomy(category ?? null, categoryMinor ?? null, itemType ?? null);
     const name = normalizeRequiredString(input.name, 'name');
     const labelName =
       input.labelName === undefined ? undefined : input.labelName === null ? null : normalizeOptionalString(input.labelName) ?? null;
@@ -590,6 +610,8 @@ export class ProductService {
       id: productId,
       ...(artistId !== undefined ? { artistId } : {}),
       ...(category !== undefined ? { category } : {}),
+      ...(categoryMinor !== undefined ? { categoryMinor } : {}),
+      ...(itemType !== undefined ? { itemType } : {}),
       name,
       ...(labelName !== undefined ? { labelName } : {}),
       ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
@@ -685,6 +707,8 @@ export class ProductService {
     const artistId = normalizeOptionalString(input.artistId);
     const q = normalizeOptionalString(input.q);
     const category = input.category === undefined ? undefined : normalizeCategory(input.category);
+    const categoryMinor = input.categoryMinor === undefined ? undefined : normalizeCategoryMinor(input.categoryMinor);
+    const itemType = input.itemType === undefined ? undefined : normalizeItemType(input.itemType);
 
     const where: Record<string, unknown> = {};
 
@@ -693,6 +717,12 @@ export class ProductService {
     }
     if (category) {
       where.category = category;
+    }
+    if (categoryMinor) {
+      where.categoryMinor = categoryMinor;
+    }
+    if (itemType) {
+      where.itemType = itemType;
     }
     if (q) {
       where.OR = [
@@ -923,6 +953,36 @@ export class ProductService {
         afterJson.category = category;
       }
     }
+
+    if (input.categoryMinor !== undefined) {
+      const categoryMinor = normalizeNullableCategoryMinor(input.categoryMinor);
+      if (categoryMinor !== current.categoryMinor) {
+        changes.categoryMinor = categoryMinor;
+        beforeJson.categoryMinor = current.categoryMinor;
+        afterJson.categoryMinor = categoryMinor;
+      }
+    }
+
+    if (input.itemType !== undefined) {
+      const itemType = normalizeNullableItemType(input.itemType);
+      if (itemType !== current.itemType) {
+        changes.itemType = itemType;
+        beforeJson.itemType = current.itemType;
+        afterJson.itemType = itemType;
+      }
+    }
+
+    const nextCategory = input.category !== undefined
+      ? (input.category === null ? null : normalizeCategory(input.category))
+      : current.category;
+    const nextCategoryMinor = input.categoryMinor !== undefined
+      ? normalizeNullableCategoryMinor(input.categoryMinor)
+      : current.categoryMinor ?? null;
+    const nextItemType = input.itemType !== undefined
+      ? normalizeNullableItemType(input.itemType)
+      : current.itemType ?? null;
+
+    validateProductTaxonomy(nextCategory, nextCategoryMinor, nextItemType);
 
     if (input.name !== undefined) {
       const name = normalizeRequiredString(input.name, 'name');
@@ -1901,12 +1961,78 @@ function normalizeCategory(value: unknown): ProductCategory {
   if (typeof value !== 'string' || !PRODUCT_CATEGORIES.includes(value as ProductCategory)) {
     throw new DomainRuleError(
       'VALIDATION_ERROR',
-      'category must be ALBUM, PHOTOCARD, or GOODS',
+      `category must be one of: ${PRODUCT_CATEGORIES.join(', ')}`,
       400,
     );
   }
 
   return value as ProductCategory;
+}
+
+function normalizeNullableCategoryMinor(value: unknown): ProductCategoryMinor | null {
+  return value === null ? null : normalizeCategoryMinor(value);
+}
+
+function normalizeCategoryMinor(value: unknown): ProductCategoryMinor {
+  if (typeof value !== 'string' || !PRODUCT_CATEGORY_MINORS.includes(value as ProductCategoryMinor)) {
+    throw new DomainRuleError(
+      'VALIDATION_ERROR',
+      `categoryMinor must be one of: ${PRODUCT_CATEGORY_MINORS.join(', ')}`,
+      400,
+    );
+  }
+  return value as ProductCategoryMinor;
+}
+
+function normalizeNullableItemType(value: unknown): ProductItemType | null {
+  return value === null ? null : normalizeItemType(value);
+}
+
+function normalizeItemType(value: unknown): ProductItemType {
+  if (typeof value !== 'string' || !PRODUCT_ITEM_TYPES.includes(value as ProductItemType)) {
+    throw new DomainRuleError(
+      'VALIDATION_ERROR',
+      `itemType must be one of: ${PRODUCT_ITEM_TYPES.join(', ')}`,
+      400,
+    );
+  }
+  return value as ProductItemType;
+}
+
+function validateProductTaxonomy(
+  category: ProductCategory | null,
+  categoryMinor: ProductCategoryMinor | null,
+  itemType: ProductItemType | null,
+): void {
+  if (category === 'ALBUM') {
+    if (categoryMinor !== null && !ALBUM_CATEGORY_MINORS.includes(categoryMinor)) {
+      throw new DomainRuleError('VALIDATION_ERROR', 'ALBUM categoryMinor must be BOY_GROUP, GIRL_GROUP, SOLO, JAPANESE_ALBUM, or OST', 400);
+    }
+    if (itemType !== null) {
+      throw new DomainRuleError('VALIDATION_ERROR', 'itemType is allowed only for GOODS products', 400);
+    }
+    return;
+  }
+
+  if (category === 'GOODS') {
+    if (categoryMinor !== null && categoryMinor !== 'OFFICIAL_GOODS' && categoryMinor !== 'FANDOM_GOODS') {
+      throw new DomainRuleError('VALIDATION_ERROR', 'GOODS categoryMinor must be OFFICIAL_GOODS or FANDOM_GOODS', 400);
+    }
+    if (itemType !== null) {
+      if (categoryMinor === null) {
+        throw new DomainRuleError('VALIDATION_ERROR', 'itemType requires GOODS categoryMinor', 400);
+      }
+      const allowed = categoryMinor === 'OFFICIAL_GOODS' ? OFFICIAL_GOODS_ITEM_TYPES : FANDOM_GOODS_ITEM_TYPES;
+      if (!allowed.includes(itemType)) {
+        throw new DomainRuleError('VALIDATION_ERROR', `itemType is not valid for ${categoryMinor}`, 400);
+      }
+    }
+    return;
+  }
+
+  if (categoryMinor !== null || itemType !== null) {
+    throw new DomainRuleError('VALIDATION_ERROR', 'categoryMinor and itemType require ALBUM or GOODS category in G4c-1', 400);
+  }
 }
 
 function normalizeSaleStatus(value: unknown): ProductSaleStatus {
@@ -2035,6 +2161,8 @@ function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredPro
   const releaseDate = mapped.releaseDate ?? parseReleaseDate(releaseDateText);
   return {
     category: mapped.category,
+    categoryMinor: null,
+    itemType: null,
     categoryMappingSource: mapped.categoryMappingSource,
     sourceCategoryCodes: mapped.rawCategoryIds,
     categoryReviewStatus: mapped.category === null ? 'NEEDS_REVIEW' : 'MAPPED',
@@ -2181,6 +2309,8 @@ function toProductSummary(
     id: product.id,
     artistId: product.artistId,
     category: product.category,
+    categoryMinor: product.categoryMinor ?? null,
+    itemType: product.itemType ?? null,
     name: product.name,
     labelName: product.labelName,
     thumbnailUrl: product.thumbnailUrl,
@@ -2440,6 +2570,8 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
   return {
     artistId: product.artistId,
     category: product.category,
+    categoryMinor: product.categoryMinor ?? null,
+    itemType: product.itemType ?? null,
     name: product.name,
     labelName: product.labelName,
     thumbnailUrl: product.thumbnailUrl,
