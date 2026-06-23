@@ -193,6 +193,42 @@ describe('Imweb product dry-run importer', () => {
     }));
   });
 
+  it('keeps dry-run-only CATE bridge candidates unmapped until explicit source approval', () => {
+    const dryRunOnlyCandidates = ['CATE46', 'CATE51', 'CATE52', 'CATE45', 'CATE30'];
+
+    for (const cateCode of dryRunOnlyCandidates) {
+      const result = parseImwebProductRow(validRow({ 카테고리ID: cateCode }), 420);
+
+      expect(result.status).toBe('create');
+      expect(result.errors).toEqual([]);
+      expect(result.mapped).toMatchObject({
+        category: null,
+        rawCategoryIds: [cateCode],
+        categoryMappingSource: 'FALLBACK',
+      });
+      expect(result.warnings).toContainEqual(expect.objectContaining({
+        code: 'CATEGORY_UNMAPPED',
+        severity: 'REVIEW',
+        domain: 'CATEGORY',
+        scope: 'KODY_REVIEW_REQUIRED',
+        field: '카테고리ID',
+      }));
+    }
+  });
+
+  it('requires exact approved Imweb CATE codes rather than prefix-like matches', () => {
+    const result = parseImwebProductRow(validRow({ 카테고리ID: 'CATE100' }), 421);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped).toMatchObject({
+      category: null,
+      rawCategoryIds: ['CATE100'],
+      categoryMappingSource: 'FALLBACK',
+    });
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'CATEGORY_UNMAPPED' }));
+  });
+
   it('keeps option-use source deviations as warning evidence without creating variant semantics', () => {
     const result = parseImwebProductRow(
       validRow({ 옵션사용: 'Y', 필수옵션명: '', 필수옵션값: '' }),
