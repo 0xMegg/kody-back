@@ -536,6 +536,75 @@ describe('product routes', () => {
     await server.close();
   });
 
+
+
+  it('creates product with G4c taxonomy minor and itemType fields', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({
+      id: 'KODY-PROD-000020',
+      category: 'GOODS',
+      categoryMinor: 'OFFICIAL_GOODS',
+      itemType: 'PHOTO_CARD',
+    });
+    const prisma = buildPrisma({
+      actor,
+      artists: [buildStoredArtist()],
+      createdProduct: product,
+      nextProductSeq: 20,
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        category: 'GOODS',
+        categoryMinor: 'OFFICIAL_GOODS',
+        itemType: 'PHOTO_CARD',
+      }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(201);
+    expect(body.data.category).toBe('GOODS');
+    expect(body.data.categoryMinor).toBe('OFFICIAL_GOODS');
+    expect(body.data.itemType).toBe('PHOTO_CARD');
+    expect(prisma.product.create.mock.calls[0][0].data).toMatchObject({
+      category: 'GOODS',
+      categoryMinor: 'OFFICIAL_GOODS',
+      itemType: 'PHOTO_CARD',
+    });
+
+    await server.close();
+  });
+
+  it('rejects invalid G4c taxonomy combinations on POST /products', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        category: 'ALBUM',
+        categoryMinor: 'OFFICIAL_GOODS',
+        itemType: 'PHOTO_CARD',
+      }),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('creates product and returns 201 with KODY-owned product id even without artist', async () => {
     const actor = buildActor();
     const product = buildStoredProduct({ id: 'KODY-PROD-000001', artistId: null, category: null, weightG: null });
@@ -581,6 +650,30 @@ describe('product routes', () => {
     expect(body.ok).toBe(true);
     expect(body.data.items).toHaveLength(1);
     expect(body.data.nextCursor).toBe('P-ATEZ-001');
+
+    await server.close();
+  });
+
+
+
+  it('passes G4c taxonomy filters to the product service on GET /products', async () => {
+    const actor = buildActor({ roles: ['SALES'] });
+    const prisma = buildPrisma({ actor, products: [buildStoredProduct({ category: 'GOODS', categoryMinor: 'OFFICIAL_GOODS', itemType: 'PHOTO_CARD' })] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/products?category=GOODS&categoryMinor=OFFICIAL_GOODS&itemType=PHOTO_CARD',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.product.findMany.mock.calls[0][0].where).toMatchObject({
+      category: 'GOODS',
+      categoryMinor: 'OFFICIAL_GOODS',
+      itemType: 'PHOTO_CARD',
+    });
 
     await server.close();
   });
@@ -715,6 +808,32 @@ describe('product routes', () => {
       category: null,
       weightG: null,
     });
+
+    await server.close();
+  });
+
+  it('rejects PATCH /products/:id when clearing category would leave stale minor/itemType taxonomy', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct({
+      category: 'GOODS',
+      categoryMinor: 'OFFICIAL_GOODS',
+      itemType: 'MD',
+    });
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: { category: null },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.product.update).not.toHaveBeenCalled();
 
     await server.close();
   });
@@ -1858,7 +1977,7 @@ function buildStoredArtist(overrides: Partial<{ id: string; name: string }> = {}
 }
 
 function buildStoredProduct(overrides: Partial<{
-  id: string; name: string; artistId: string | null; category: ProductCategory | null; weightG: number | null;
+  id: string; name: string; artistId: string | null; category: ProductCategory | null; categoryMinor: 'BOY_GROUP' | 'GIRL_GROUP' | 'SOLO' | 'JAPANESE_ALBUM' | 'OST' | 'OFFICIAL_GOODS' | 'FANDOM_GOODS' | null; itemType: 'LIGHT_STICK' | 'MD' | 'PHOTOBOOK' | 'PHOTO_CARD' | 'MUSIC_SHEET' | 'SANRIO' | 'HOLDER' | 'COLLECT_BOOK' | 'STICKER' | null; weightG: number | null;
   labelName: string | null; releaseDateText: string | null; releaseDate: Date | null; sku: string | null; barcode: string | null;
   stockOnHand: number; orderBasedStock: number; shipmentBasedStock: number;
   stockManaged: boolean; saleStatus: ProductSaleStatus;
@@ -1869,6 +1988,8 @@ function buildStoredProduct(overrides: Partial<{
     id: overrides.id ?? PRODUCT_ID,
     artistId: overrides.artistId === undefined ? ARTIST_ID : overrides.artistId,
     category: overrides.category === undefined ? 'ALBUM' as ProductCategory : overrides.category,
+    categoryMinor: overrides.categoryMinor === undefined ? null : overrides.categoryMinor,
+    itemType: overrides.itemType === undefined ? null : overrides.itemType,
     name: overrides.name ?? 'Standard Album',
     labelName: overrides.labelName === undefined ? null : overrides.labelName,
     thumbnailUrl: overrides.thumbnailUrl === undefined ? null : overrides.thumbnailUrl,

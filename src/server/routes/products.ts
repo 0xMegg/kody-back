@@ -19,11 +19,15 @@ import type {
   CategoryMappingSource,
   CategoryReviewStatus,
   ProductCategory,
+  ProductCategoryMinor,
+  ProductItemType,
   ProductSaleStatus,
 } from '@/domain/shared/types.js';
 import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
 
-const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS'];
+const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS', 'MAGAZINE', 'SEASON_GREETINGS'];
+const PRODUCT_CATEGORY_MINORS: readonly ProductCategoryMinor[] = ['BOY_GROUP', 'GIRL_GROUP', 'SOLO', 'JAPANESE_ALBUM', 'OST', 'OFFICIAL_GOODS', 'FANDOM_GOODS'];
+const PRODUCT_ITEM_TYPES: readonly ProductItemType[] = ['LIGHT_STICK', 'MD', 'PHOTOBOOK', 'PHOTO_CARD', 'MUSIC_SHEET', 'SANRIO', 'HOLDER', 'COLLECT_BOOK', 'STICKER'];
 const PRODUCT_SALE_STATUSES: readonly ProductSaleStatus[] = ['ON_SALE', 'OFF_SALE', 'SOLD_OUT', 'DRAFT'];
 const CATEGORY_MAPPING_SOURCES: readonly CategoryMappingSource[] = ['EXACT', 'FALLBACK', 'MANUAL'];
 const CATEGORY_REVIEW_STATUSES: readonly CategoryReviewStatus[] = ['PENDING', 'MAPPED', 'NEEDS_REVIEW'];
@@ -263,6 +267,14 @@ function parseCreateBody(body: unknown): CreateBody {
     result.category = parseCategory(body.category);
   }
 
+  if (body.categoryMinor !== undefined) {
+    result.categoryMinor = body.categoryMinor === null ? null : parseCategoryMinor(body.categoryMinor);
+  }
+
+  if (body.itemType !== undefined) {
+    result.itemType = body.itemType === null ? null : parseItemType(body.itemType);
+  }
+
   if (body.weightG !== undefined) {
     result.weightG = parseNonNegativeInteger(body.weightG, 'weightG');
   }
@@ -352,6 +364,14 @@ function parseUpdateBody(body: unknown): UpdateBody {
 
   if (body.category !== undefined) {
     result.category = body.category === null ? null : parseCategory(body.category);
+  }
+
+  if (body.categoryMinor !== undefined) {
+    result.categoryMinor = body.categoryMinor === null ? null : parseCategoryMinor(body.categoryMinor);
+  }
+
+  if (body.itemType !== undefined) {
+    result.itemType = body.itemType === null ? null : parseItemType(body.itemType);
   }
 
   if (body.name !== undefined) {
@@ -553,6 +573,14 @@ function parseListQuery(query: unknown): ListProductsInput {
     result.category = parseCategory(record.category);
   }
 
+  if (record.categoryMinor !== undefined) {
+    result.categoryMinor = parseCategoryMinor(record.categoryMinor);
+  }
+
+  if (record.itemType !== undefined) {
+    result.itemType = parseItemType(record.itemType);
+  }
+
   if (record.q !== undefined) {
     if (typeof record.q !== 'string') {
       throw new ValidationError('q must be a string');
@@ -610,10 +638,26 @@ function parseExternalMappingOperation(value: unknown): 'REMAP' | 'DETACH' {
 
 function parseCategory(value: unknown): ProductCategory {
   if (typeof value !== 'string' || !PRODUCT_CATEGORIES.includes(value as ProductCategory)) {
-    throw new ValidationError('category must be ALBUM, PHOTOCARD, or GOODS');
+    throw new ValidationError(`category must be one of: ${PRODUCT_CATEGORIES.join(', ')}`);
   }
 
   return value as ProductCategory;
+}
+
+function parseCategoryMinor(value: unknown): ProductCategoryMinor {
+  if (typeof value !== 'string' || !PRODUCT_CATEGORY_MINORS.includes(value as ProductCategoryMinor)) {
+    throw new ValidationError(`categoryMinor must be one of: ${PRODUCT_CATEGORY_MINORS.join(', ')}`);
+  }
+
+  return value as ProductCategoryMinor;
+}
+
+function parseItemType(value: unknown): ProductItemType {
+  if (typeof value !== 'string' || !PRODUCT_ITEM_TYPES.includes(value as ProductItemType)) {
+    throw new ValidationError(`itemType must be one of: ${PRODUCT_ITEM_TYPES.join(', ')}`);
+  }
+
+  return value as ProductItemType;
 }
 
 function parseSaleStatus(value: unknown): ProductSaleStatus {

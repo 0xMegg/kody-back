@@ -11,7 +11,27 @@ export type ShipmentStatus = 'PENDING' | 'COMPLETED';
 
 export type ShipmentItemStatus = 'NOT_SHIPPED' | 'PENDING' | 'COMPLETED';
 
-export type ProductCategory = 'ALBUM' | 'PHOTOCARD' | 'GOODS';
+export type ProductCategory = 'ALBUM' | 'PHOTOCARD' | 'GOODS' | 'MAGAZINE' | 'SEASON_GREETINGS';
+
+export type ProductCategoryMinor =
+  | 'BOY_GROUP'
+  | 'GIRL_GROUP'
+  | 'SOLO'
+  | 'JAPANESE_ALBUM'
+  | 'OST'
+  | 'OFFICIAL_GOODS'
+  | 'FANDOM_GOODS';
+
+export type ProductItemType =
+  | 'LIGHT_STICK'
+  | 'MD'
+  | 'PHOTOBOOK'
+  | 'PHOTO_CARD'
+  | 'MUSIC_SHEET'
+  | 'SANRIO'
+  | 'HOLDER'
+  | 'COLLECT_BOOK'
+  | 'STICKER';
 
 export type ProductSaleStatus = 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT';
 

@@ -5,6 +5,8 @@ import type {
   DepositSource,
   OrderStatus,
   ProductCategory,
+  ProductCategoryMinor,
+  ProductItemType,
   CategoryReviewStatus,
   UserStatus,
 } from '@/domain/shared/types.js';
@@ -33,6 +35,8 @@ export interface AccountCustomerProductChip {
   kodyProductId: string;
   name: string;
   category: ProductCategory | null;
+  categoryMinor?: ProductCategoryMinor | null;
+  itemType?: ProductItemType | null;
   categoryMappingSource: CategoryMappingSource;
   categoryReviewStatus: CategoryReviewStatus;
   sourceCategoryCodes: string[];
@@ -116,6 +120,8 @@ interface StoredOrderProductLite {
   id: string;
   name: string;
   category: ProductCategory | null;
+  categoryMinor: ProductCategoryMinor | null;
+  itemType: ProductItemType | null;
   categoryMappingSource: CategoryMappingSource;
   categoryReviewStatus: CategoryReviewStatus;
   sourceCategoryCodes: string[];
@@ -240,6 +246,8 @@ export class AccountService {
                 id: true,
                 name: true,
                 category: true,
+                categoryMinor: true,
+                itemType: true,
                 categoryMappingSource: true,
                 categoryReviewStatus: true,
                 sourceCategoryCodes: true,
@@ -442,6 +450,8 @@ function toCustomerRecentOrder(order: StoredOrderWithItems): AccountCustomerRece
         kodyProductId: product.id,
         name: product.name,
         category: product.category,
+        categoryMinor: product.categoryMinor ?? null,
+        itemType: product.itemType ?? null,
         categoryMappingSource: product.categoryMappingSource,
         categoryReviewStatus: product.categoryReviewStatus,
         sourceCategoryCodes: product.sourceCategoryCodes,
