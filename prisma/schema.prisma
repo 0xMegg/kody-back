@@ -100,6 +100,22 @@ enum ProductSaleStatus {
   DRAFT
 }
 
+enum DisplayLifecycleState {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum CalendarSourceType {
+  PRODUCT_SALE_WINDOW
+}
+
+enum CalendarProjectionStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+}
+
 enum ProductPriceStatus {
   CONFIRMED
   MISSING
@@ -452,9 +468,10 @@ model Product {
   stockMovements   StockMovement[]
   orderItems       OrderItem[]
   shipmentItems    ShipmentItem[]
-  externalMappings ProductExternalMapping[]
-  options          ProductOption[]
-  variants         ProductVariant[]
+  externalMappings          ProductExternalMapping[]
+  options                   ProductOption[]
+  variants                  ProductVariant[]
+  displayCollectionProducts DisplayCollectionProduct[]
 
   @@index([artistId])
   @@index([category])
@@ -546,6 +563,87 @@ model ProductVariant {
   updatedAt DateTime @updatedAt
 
   @@index([productId])
+}
+
+model DisplayCollection {
+  id              String                @id @default(cuid())
+  name            String
+  description     String?
+  lifecycleState  DisplayLifecycleState @default(DRAFT)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  createdByUserId String?
+  updatedByUserId String?
+
+  products           DisplayCollectionProduct[]
+  homepagePlacements HomepageLayoutCollection[]
+
+  @@index([lifecycleState])
+  @@index([createdAt])
+}
+
+model DisplayCollectionProduct {
+  id           String   @id @default(cuid())
+  collectionId String
+  productId    String
+  sortPosition Int      @default(0)
+  isPinned     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  collection DisplayCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  product    Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([collectionId, productId])
+  @@index([collectionId, sortPosition])
+  @@index([productId])
+}
+
+model HomepageLayout {
+  id                        String                @id @default(cuid())
+  state                     DisplayLifecycleState @default(DRAFT)
+  version                   Int
+  snapshotHash              String?
+  publishedAt               DateTime?
+  publishedByUserId         String?
+  previousPublishedLayoutId String?
+  createdAt                 DateTime              @default(now())
+  updatedAt                 DateTime              @updatedAt
+
+  collections HomepageLayoutCollection[]
+
+  @@index([state])
+}
+
+model HomepageLayoutCollection {
+  id           String   @id @default(cuid())
+  layoutId     String
+  collectionId String
+  sortPosition Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  layout     HomepageLayout    @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  collection DisplayCollection @relation(fields: [collectionId], references: [id], onDelete: Restrict)
+
+  @@unique([layoutId, collectionId])
+  @@index([layoutId, sortPosition])
+  @@index([collectionId])
+}
+
+model CalendarEventProjection {
+  id          String                   @id @default(cuid())
+  sourceType  CalendarSourceType
+  sourceId    String
+  startsAtUtc DateTime?
+  endsAtUtc   DateTime?
+  timezone    String                   @default("Asia/Seoul")
+  status      CalendarProjectionStatus @default(DRAFT)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@unique([sourceType, sourceId])
+  @@index([status])
 }
 
 model ImportBatch {
