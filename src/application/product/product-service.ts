@@ -6,6 +6,7 @@ import type {
   ProductCategory,
   ProductCategoryMinor,
   ProductItemType,
+  ProductPublicSaleWindowStatus,
   ProductSaleStatus,
   ShipmentItemStatus,
   StockMovementType,
@@ -144,6 +145,11 @@ export interface ProductSummary {
   categoryMappingSource: CategoryMappingSource;
   sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus;
+  publicSaleStartsAt: Date | null;
+  publicSaleEndsAt: Date | null;
+  publicSaleWindowStatus: ProductPublicSaleWindowStatus;
+  publicSaleWindowUpdatedByUserId: string | null;
+  publicSaleWindowUpdatedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -232,6 +238,17 @@ export interface UpdateProductInput {
   sourceCategoryCodes?: string[];
   categoryReviewStatus?: CategoryReviewStatus;
   variants?: VariantWriteInput[];
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export interface UpdateProductPublicSaleWindowInput {
+  actorUserId: string;
+  productId: string;
+  publicSaleStartsAt?: string | null;
+  publicSaleEndsAt?: string | null;
+  publicSaleWindowStatus: ProductPublicSaleWindowStatus;
+  reason?: string;
   ipAddress?: string;
   userAgent?: string;
 }
@@ -325,6 +342,11 @@ interface StoredProduct {
   categoryMappingSource: CategoryMappingSource;
   sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus;
+  publicSaleStartsAt: Date | null;
+  publicSaleEndsAt: Date | null;
+  publicSaleWindowStatus: ProductPublicSaleWindowStatus;
+  publicSaleWindowUpdatedByUserId: string | null;
+  publicSaleWindowUpdatedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1203,6 +1225,63 @@ export class ProductService {
       0,
       afterVariants,
     );
+  }
+
+  async updateProductPublicSaleWindow(input: UpdateProductPublicSaleWindowInput): Promise<ProductSummary> {
+    const productId = normalizeRequiredString(input.productId, 'productId');
+    const current = await this.findProduct(productId);
+    const publicSaleWindowStatus = normalizeProductPublicSaleWindowStatus(input.publicSaleWindowStatus);
+    const publicSaleStartsAt = input.publicSaleStartsAt === undefined
+      ? current.publicSaleStartsAt
+      : normalizeOptionalIsoDateTime(input.publicSaleStartsAt, 'publicSaleStartsAt');
+    const publicSaleEndsAt = input.publicSaleEndsAt === undefined
+      ? current.publicSaleEndsAt
+      : normalizeOptionalIsoDateTime(input.publicSaleEndsAt, 'publicSaleEndsAt');
+    const reason = input.reason === undefined ? undefined : normalizeOptionalString(input.reason);
+
+    if (publicSaleStartsAt !== null && publicSaleEndsAt !== null && publicSaleEndsAt.getTime() <= publicSaleStartsAt.getTime()) {
+      throw new DomainRuleError('VALIDATION_ERROR', 'publicSaleEndsAt must be after publicSaleStartsAt for [start,end) sale windows', 400);
+    }
+
+    if ((publicSaleWindowStatus === 'APPROVED' || publicSaleWindowStatus === 'CANCELLED') && reason === undefined) {
+      throw new DomainRuleError('VALIDATION_ERROR', 'reason is required when publicSaleWindowStatus is APPROVED or CANCELLED', 400);
+    }
+
+    if (publicSaleWindowStatus === 'APPROVED' && publicSaleStartsAt === null) {
+      throw new DomainRuleError('VALIDATION_ERROR', 'publicSaleStartsAt is required when publicSaleWindowStatus is APPROVED', 400);
+    }
+
+    const now = new Date();
+    const changes = {
+      publicSaleStartsAt,
+      publicSaleEndsAt,
+      publicSaleWindowStatus,
+      publicSaleWindowUpdatedByUserId: input.actorUserId,
+      publicSaleWindowUpdatedAt: now,
+    };
+
+    const updated = await this.repository.product.update({
+      where: { id: productId },
+      data: changes,
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'PRODUCT_UPDATE',
+      targetType: 'Product',
+      targetId: productId,
+      beforeJson: toProductPublicSaleWindowAuditPayload(current),
+      afterJson: toProductPublicSaleWindowAuditPayload(updated),
+      metadataJson: {
+        source: 'manual_oms',
+        reason: reason ?? null,
+        scope: 'product_public_sale_window',
+      },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+
+    return toProductSummary(updated, undefined, undefined, await this.getLatestUsdRateToKRW());
   }
 
   async upsertImwebProduct(input: UpsertImwebProductInput): Promise<UpsertImwebProductResult> {
@@ -2341,6 +2420,11 @@ function toProductSummary(
     categoryMappingSource: product.categoryMappingSource,
     sourceCategoryCodes: [...product.sourceCategoryCodes],
     categoryReviewStatus: product.categoryReviewStatus,
+    publicSaleStartsAt: product.publicSaleStartsAt,
+    publicSaleEndsAt: product.publicSaleEndsAt,
+    publicSaleWindowStatus: product.publicSaleWindowStatus,
+    publicSaleWindowUpdatedByUserId: product.publicSaleWindowUpdatedByUserId,
+    publicSaleWindowUpdatedAt: product.publicSaleWindowUpdatedAt,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
   };
@@ -2495,6 +2579,13 @@ function normalizeVariantWriteInput(entry: unknown, index: number): NormalizedVa
   };
 }
 
+function normalizeProductPublicSaleWindowStatus(value: unknown): ProductPublicSaleWindowStatus {
+  if (typeof value !== 'string' || !(['DRAFT', 'APPROVED', 'CANCELLED'] as const).includes(value as ProductPublicSaleWindowStatus)) {
+    throw new DomainRuleError('VALIDATION_ERROR', 'publicSaleWindowStatus must be DRAFT, APPROVED, or CANCELLED', 400);
+  }
+  return value as ProductPublicSaleWindowStatus;
+}
+
 function normalizeOptionalIsoDateTime(value: unknown, field: string): Date | null {
   if (value === undefined || value === null) {
     return null;
@@ -2592,5 +2683,15 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
     categoryMappingSource: product.categoryMappingSource,
     sourceCategoryCodes: [...product.sourceCategoryCodes],
     categoryReviewStatus: product.categoryReviewStatus,
+  };
+}
+
+function toProductPublicSaleWindowAuditPayload(product: StoredProduct): Record<string, unknown> {
+  return {
+    publicSaleStartsAt: product.publicSaleStartsAt,
+    publicSaleEndsAt: product.publicSaleEndsAt,
+    publicSaleWindowStatus: product.publicSaleWindowStatus,
+    publicSaleWindowUpdatedByUserId: product.publicSaleWindowUpdatedByUserId,
+    publicSaleWindowUpdatedAt: product.publicSaleWindowUpdatedAt,
   };
 }

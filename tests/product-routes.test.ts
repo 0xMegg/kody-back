@@ -6,6 +6,7 @@ import type {
   CategoryReviewStatus,
   OrderStatus,
   ProductCategory,
+  ProductPublicSaleWindowStatus,
   ProductSaleStatus,
   Role,
   ShipmentItemStatus,
@@ -987,6 +988,218 @@ describe('product routes', () => {
 
     expect(response.statusCode).toBe(404);
     expect(body.error.code).toBe('PRODUCT_NOT_FOUND');
+
+    await server.close();
+  });
+
+  // ── PATCH /products/:id/public-sale-window ────────────────────────────────
+
+  it('allows ADMIN to approve a product public sale-window with UTC persistence and audit metadata only', async () => {
+    const actor = buildActor({ roles: ['ADMIN'] });
+    const product = buildStoredProduct({
+      publicSaleStartsAt: null,
+      publicSaleEndsAt: null,
+      publicSaleWindowStatus: 'DRAFT',
+      publicSaleWindowUpdatedByUserId: null,
+      publicSaleWindowUpdatedAt: null,
+    });
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}/public-sale-window`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        publicSaleStartsAt: '2026-07-01T09:00:00+09:00',
+        publicSaleEndsAt: '2026-07-07T18:00:00+09:00',
+        publicSaleWindowStatus: 'APPROVED',
+        reason: 'homepage preorder calendar approved by MD',
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.publicSaleStartsAt).toBe('2026-07-01T00:00:00.000Z');
+    expect(body.data.publicSaleEndsAt).toBe('2026-07-07T09:00:00.000Z');
+    expect(body.data.publicSaleWindowStatus).toBe('APPROVED');
+    expect(body.data.publicSaleWindowUpdatedByUserId).toBe(actor.id);
+    expect(body.data.publicSaleWindowUpdatedAt).toEqual(expect.any(String));
+
+    const updateData = prisma.product.update.mock.calls[0][0].data;
+    expect(updateData).toMatchObject({
+      publicSaleStartsAt: new Date('2026-07-01T00:00:00.000Z'),
+      publicSaleEndsAt: new Date('2026-07-07T09:00:00.000Z'),
+      publicSaleWindowStatus: 'APPROVED',
+      publicSaleWindowUpdatedByUserId: actor.id,
+    });
+    expect(updateData).not.toHaveProperty('reason');
+    expect(prisma.productVariant.findMany).not.toHaveBeenCalled();
+    expect(prisma.productVariant.create).not.toHaveBeenCalled();
+    expect(prisma.productVariant.update).not.toHaveBeenCalled();
+    expect(prisma.productVariant.deleteMany).not.toHaveBeenCalled();
+
+    expect(prisma.actionLog.create.mock.calls[0][0].data).toMatchObject({
+      actionType: 'PRODUCT_UPDATE',
+      targetType: 'Product',
+      targetId: PRODUCT_ID,
+      beforeJson: {
+        publicSaleStartsAt: null,
+        publicSaleEndsAt: null,
+        publicSaleWindowStatus: 'DRAFT',
+        publicSaleWindowUpdatedByUserId: null,
+        publicSaleWindowUpdatedAt: null,
+      },
+      afterJson: {
+        publicSaleStartsAt: new Date('2026-07-01T00:00:00.000Z'),
+        publicSaleEndsAt: new Date('2026-07-07T09:00:00.000Z'),
+        publicSaleWindowStatus: 'APPROVED',
+        publicSaleWindowUpdatedByUserId: actor.id,
+        publicSaleWindowUpdatedAt: expect.any(Date),
+      },
+      metadataJson: {
+        source: 'manual_oms',
+        reason: 'homepage preorder calendar approved by MD',
+        scope: 'product_public_sale_window',
+      },
+    });
+
+    await server.close();
+  });
+
+  it('preserves existing public sale-window dates when omitted from dedicated PATCH', async () => {
+    const actor = buildActor({ roles: ['ADMIN'] });
+    const product = buildStoredProduct({
+      publicSaleStartsAt: new Date('2026-07-01T00:00:00.000Z'),
+      publicSaleEndsAt: new Date('2026-07-07T09:00:00.000Z'),
+      publicSaleWindowStatus: 'APPROVED',
+      publicSaleWindowUpdatedByUserId: 'previous_admin',
+      publicSaleWindowUpdatedAt: new Date('2026-06-30T00:00:00.000Z'),
+    });
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}/public-sale-window`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        publicSaleWindowStatus: 'CANCELLED',
+        reason: 'cancelled by merchandising team',
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.data.publicSaleStartsAt).toBe('2026-07-01T00:00:00.000Z');
+    expect(body.data.publicSaleEndsAt).toBe('2026-07-07T09:00:00.000Z');
+    expect(prisma.product.update.mock.calls[0][0].data).toMatchObject({
+      publicSaleStartsAt: new Date('2026-07-01T00:00:00.000Z'),
+      publicSaleEndsAt: new Date('2026-07-07T09:00:00.000Z'),
+      publicSaleWindowStatus: 'CANCELLED',
+      publicSaleWindowUpdatedByUserId: actor.id,
+    });
+
+    await server.close();
+  });
+
+  it('allows FINANCE but rejects OPERATIONS from product public sale-window writes', async () => {
+    const product = buildStoredProduct();
+
+    const finance = buildActor({ id: 'finance_1', roles: ['FINANCE'] });
+    const financePrisma = buildPrisma({ actor: finance, products: [product] });
+    const financeServer = buildTestServer(financePrisma);
+    await financeServer.ready();
+
+    const financeResponse = await financeServer.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}/public-sale-window`,
+      headers: { authorization: `Bearer ${issueToken(finance.id, finance.roles)}` },
+      payload: { publicSaleWindowStatus: 'DRAFT' },
+    });
+
+    expect(financeResponse.statusCode).toBe(200);
+    await financeServer.close();
+
+    const operations = buildActor({ id: 'ops_1', roles: ['OPERATIONS'] });
+    const operationsPrisma = buildPrisma({ actor: operations, products: [product] });
+    const operationsServer = buildTestServer(operationsPrisma);
+    await operationsServer.ready();
+
+    const operationsResponse = await operationsServer.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}/public-sale-window`,
+      headers: { authorization: `Bearer ${issueToken(operations.id, operations.roles)}` },
+      payload: { publicSaleWindowStatus: 'DRAFT' },
+    });
+
+    expect(operationsResponse.statusCode).toBe(403);
+    expect(operationsResponse.json().error.code).toBe('AUTHORIZATION_ERROR');
+    expect(operationsPrisma.product.update).not.toHaveBeenCalled();
+    await operationsServer.close();
+  });
+
+  it('requires reason for APPROVED/CANCELLED and enforces [start,end) product public sale-window validation', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const missingReason = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}/public-sale-window`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        publicSaleStartsAt: '2026-07-01T00:00:00.000Z',
+        publicSaleWindowStatus: 'APPROVED',
+      },
+    });
+    expect(missingReason.statusCode).toBe(400);
+    expect(missingReason.json().error.code).toBe('VALIDATION_ERROR');
+
+    const invalidWindow = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}/public-sale-window`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        publicSaleStartsAt: '2026-07-01T00:00:00.000Z',
+        publicSaleEndsAt: '2026-07-01T00:00:00.000Z',
+        publicSaleWindowStatus: 'DRAFT',
+      },
+    });
+    expect(invalidWindow.statusCode).toBe(400);
+    expect(invalidWindow.json().error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.actionLog.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects generic PATCH /products/:id attempts to mutate product public sale-window fields', async () => {
+    const actor = buildActor();
+    const product = buildStoredProduct();
+    const prisma = buildPrisma({ actor, products: [product] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        name: 'Updated Album',
+        publicSaleStartsAt: '2026-07-01T00:00:00.000Z',
+        publicSaleWindowStatus: 'APPROVED',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('VALIDATION_ERROR');
+    expect(prisma.product.update).not.toHaveBeenCalled();
 
     await server.close();
   });
@@ -1983,6 +2196,9 @@ function buildStoredProduct(overrides: Partial<{
   stockManaged: boolean; saleStatus: ProductSaleStatus;
   isDisplayed: boolean; categoryMappingSource: CategoryMappingSource; sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus; thumbnailUrl: string | null; detailHtml: string | null;
+  publicSaleStartsAt: Date | null; publicSaleEndsAt: Date | null;
+  publicSaleWindowStatus: ProductPublicSaleWindowStatus;
+  publicSaleWindowUpdatedByUserId: string | null; publicSaleWindowUpdatedAt: Date | null;
 }> = {}) {
   return {
     id: overrides.id ?? PRODUCT_ID,
@@ -2014,6 +2230,11 @@ function buildStoredProduct(overrides: Partial<{
     categoryMappingSource: overrides.categoryMappingSource ?? ('EXACT' as CategoryMappingSource),
     sourceCategoryCodes: overrides.sourceCategoryCodes ?? [],
     categoryReviewStatus: overrides.categoryReviewStatus ?? ('PENDING' as CategoryReviewStatus),
+    publicSaleStartsAt: overrides.publicSaleStartsAt === undefined ? null : overrides.publicSaleStartsAt,
+    publicSaleEndsAt: overrides.publicSaleEndsAt === undefined ? null : overrides.publicSaleEndsAt,
+    publicSaleWindowStatus: overrides.publicSaleWindowStatus ?? ('DRAFT' as ProductPublicSaleWindowStatus),
+    publicSaleWindowUpdatedByUserId: overrides.publicSaleWindowUpdatedByUserId === undefined ? null : overrides.publicSaleWindowUpdatedByUserId,
+    publicSaleWindowUpdatedAt: overrides.publicSaleWindowUpdatedAt === undefined ? null : overrides.publicSaleWindowUpdatedAt,
     createdAt: new Date('2026-05-27T00:00:00Z'),
     updatedAt: new Date('2026-05-27T00:00:00Z'),
   };
@@ -2155,7 +2376,7 @@ function buildPrisma(input: PrismaInput) {
             shipmentBasedStock: base.shipmentBasedStock + (shipmentIncrement ?? 0),
           };
         }
-        return base;
+        return { ...base, ...args.data };
       }),
     },
     productSequence: {
