@@ -14,6 +14,7 @@ import { registerPaymentRoutes } from './payments.js';
 import { registerProductRoutes } from './products.js';
 import { registerProfileRoutes } from './profile.js';
 import { registerShipmentRoutes } from './shipments.js';
+import { registerStorefrontPublicAdapterPreviewRoutes } from './storefront-public-adapter-preview.js';
 import { registerStorefrontReadinessRoutes } from './storefront-readiness.js';
 import { registerUploadRoutes } from './uploads.js';
 
@@ -32,6 +33,7 @@ export function registerRoutes(server: FastifyInstance): void {
   registerProductRoutes(server);
   registerProfileRoutes(server);
   registerShipmentRoutes(server);
+  registerStorefrontPublicAdapterPreviewRoutes(server);
   registerStorefrontReadinessRoutes(server);
   registerUploadRoutes(server);
   registerHealthRoutes(server);

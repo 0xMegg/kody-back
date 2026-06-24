@@ -18,6 +18,7 @@ import { PaymentService } from '@/application/payment/payment-service.js';
 import { ShipmentService } from '@/application/shipment/shipment-service.js';
 import { ActionLogWriter } from '@/application/shared/action-log-writer.js';
 import { CalendarEventProjectionService } from '@/application/storefront/calendar-event-projection-service.js';
+import { PublicAdapterPreviewService } from '@/application/storefront/public-adapter-preview-service.js';
 import type { ServerConfig } from './config.js';
 
 export interface ServerServices {
@@ -35,6 +36,7 @@ export interface ServerServices {
   payments: PaymentService;
   shipments: ShipmentService;
   calendarEvents: CalendarEventProjectionService;
+  publicAdapterPreview: PublicAdapterPreviewService;
 }
 
 export function buildServerServices(
@@ -56,6 +58,8 @@ export function buildServerServices(
         requireTls: config.smtpRequireTls,
       })
     : new DevOutboxInviteEmailSender();
+
+  const calendarEvents = new CalendarEventProjectionService();
 
   return {
     accounts: new AccountService(prisma as never, actionLogWriter),
@@ -79,6 +83,7 @@ export function buildServerServices(
     }),
     payments: new PaymentService(prisma as never, actionLogWriter),
     shipments: new ShipmentService(prisma as never, actionLogWriter),
-    calendarEvents: new CalendarEventProjectionService(),
+    calendarEvents,
+    publicAdapterPreview: new PublicAdapterPreviewService(calendarEvents),
   };
 }

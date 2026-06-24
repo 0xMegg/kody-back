@@ -4,6 +4,7 @@ import {
   CalendarEventProjectionService,
   validateProductSaleWindowForProjection,
 } from '@/application/storefront/calendar-event-projection-service.js';
+import { PublicAdapterPreviewService } from '@/application/storefront/public-adapter-preview-service.js';
 
 const service = new CalendarEventProjectionService();
 
@@ -108,5 +109,35 @@ describe('CalendarEventProjectionService', () => {
     expect(variant).toBeDefined();
     expect(() => service.projectPublicEvents()).not.toThrow();
     expect(service.projectPublicEvents().publicEvents).toEqual([]);
+  });
+
+  it('keeps public adapter preview Product-level only and excludes invalid sale windows', () => {
+    const preview = new PublicAdapterPreviewService(service);
+    const startsAtUtc = new Date('2026-07-01T00:00:00.000Z');
+
+    const result = preview.buildPreview({
+      productSources: [
+        { productId: 'draft_product', publicSaleStartsAt: startsAtUtc, publicSaleWindowStatus: 'DRAFT' },
+        { productId: 'missing_start', publicSaleWindowStatus: 'APPROVED' },
+        {
+          productId: 'invalid_end',
+          publicSaleStartsAt: startsAtUtc,
+          publicSaleEndsAt: new Date(startsAtUtc),
+          publicSaleWindowStatus: 'APPROVED',
+        },
+        {
+          productId: 'approved_product',
+          publicSaleStartsAt: startsAtUtc,
+          publicSaleEndsAt: new Date('2026-07-07T00:00:00.000Z'),
+          publicSaleWindowStatus: 'APPROVED',
+        },
+      ],
+    });
+
+    expect(result.previewOnly).toBe(true);
+    expect(result.publishEnabled).toBe(false);
+    expect(result.externalSyncEnabled).toBe(false);
+    expect(result.calendar.variantSaleWindowsUsed).toBe(false);
+    expect(result.calendar.publicEvents.map((event) => event.sourceId)).toEqual(['approved_product']);
   });
 });
