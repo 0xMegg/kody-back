@@ -13,6 +13,7 @@ import type {
   InboundInput,
   ListProductsInput,
   UpdateProductInput,
+  UpdateProductPublicSaleWindowInput,
   VariantWriteInput,
 } from '@/application/product/product-service.js';
 import type {
@@ -21,6 +22,7 @@ import type {
   ProductCategory,
   ProductCategoryMinor,
   ProductItemType,
+  ProductPublicSaleWindowStatus,
   ProductSaleStatus,
 } from '@/domain/shared/types.js';
 import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
@@ -29,6 +31,7 @@ const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'G
 const PRODUCT_CATEGORY_MINORS: readonly ProductCategoryMinor[] = ['BOY_GROUP', 'GIRL_GROUP', 'SOLO', 'JAPANESE_ALBUM', 'OST', 'OFFICIAL_GOODS', 'FANDOM_GOODS'];
 const PRODUCT_ITEM_TYPES: readonly ProductItemType[] = ['LIGHT_STICK', 'MD', 'PHOTOBOOK', 'PHOTO_CARD', 'MUSIC_SHEET', 'SANRIO', 'HOLDER', 'COLLECT_BOOK', 'STICKER'];
 const PRODUCT_SALE_STATUSES: readonly ProductSaleStatus[] = ['ON_SALE', 'OFF_SALE', 'SOLD_OUT', 'DRAFT'];
+const PRODUCT_PUBLIC_SALE_WINDOW_STATUSES: readonly ProductPublicSaleWindowStatus[] = ['DRAFT', 'APPROVED', 'CANCELLED'];
 const CATEGORY_MAPPING_SOURCES: readonly CategoryMappingSource[] = ['EXACT', 'FALLBACK', 'MANUAL'];
 const CATEGORY_REVIEW_STATUSES: readonly CategoryReviewStatus[] = ['PENDING', 'MAPPED', 'NEEDS_REVIEW'];
 
@@ -150,6 +153,26 @@ export function registerProductRoutes(server: FastifyInstance): void {
     },
   );
 
+  server.patch(
+    '/products/:id/public-sale-window',
+    { preHandler: requirePermission({ resource: 'product', action: 'write' }) },
+    async (request, reply) => {
+      assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN', 'FINANCE']);
+      const productId = parseProductId(request.params);
+      const body = parsePublicSaleWindowBody(request.body);
+      const result = await server.services.products.updateProductPublicSaleWindow({
+        actorUserId: (request as AuthenticatedRequest).authUser.id,
+        productId,
+        ...body,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+
+      reply.status(200);
+      return successResponse(result);
+    },
+  );
+
   server.post(
     '/products/:id/inbound',
     { preHandler: requirePermission({ resource: 'product', action: 'write' }) },
@@ -204,6 +227,7 @@ export function registerProductRoutes(server: FastifyInstance): void {
 type CreateBody = Omit<CreateProductInput, 'actorUserId' | 'ipAddress' | 'userAgent'>;
 type UpdateBody = Omit<UpdateProductInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 type InboundBody = Omit<InboundInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
+type PublicSaleWindowBody = Omit<UpdateProductPublicSaleWindowInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 type AdjustBody = Omit<AdjustInput, 'actorUserId' | 'productId' | 'ipAddress' | 'userAgent'>;
 type CorrectExternalMappingBody = Omit<CorrectExternalMappingInput, 'actorUserId' | 'ipAddress' | 'userAgent'>;
 
@@ -356,6 +380,7 @@ function parseUpdateBody(body: unknown): UpdateBody {
     throw new ValidationError('Request body must be an object');
   }
 
+  rejectPublicSaleWindowFields(body);
   const result: UpdateBody = {};
 
   if (body.artistId !== undefined) {
@@ -451,6 +476,14 @@ function parseUpdateBody(body: unknown): UpdateBody {
   return result;
 }
 
+function rejectPublicSaleWindowFields(body: Record<string, unknown>): void {
+  for (const field of ['publicSaleStartsAt', 'publicSaleEndsAt', 'publicSaleWindowStatus', 'publicSaleWindowUpdatedByUserId', 'publicSaleWindowUpdatedAt'] as const) {
+    if (body[field] !== undefined) {
+      throw new ValidationError(`${field} cannot be set through generic product PATCH; use /products/:id/public-sale-window`);
+    }
+  }
+}
+
 function rejectDirectStockFields(body: Record<string, unknown>): void {
   for (const field of ['stockOnHand', 'orderBasedStock', 'shipmentBasedStock', 'openOrderedQuantity'] as const) {
     if (body[field] !== undefined) {
@@ -519,6 +552,30 @@ function parseVariant(entry: unknown, index: number): VariantWriteInput {
 
   if (entry.position !== undefined) {
     result.position = parseNonNegativeInteger(entry.position, `variants[${index}].position`);
+  }
+
+  return result;
+}
+
+function parsePublicSaleWindowBody(body: unknown): PublicSaleWindowBody {
+  if (!isRecord(body)) {
+    throw new ValidationError('Request body must be an object');
+  }
+
+  const result: PublicSaleWindowBody = {
+    publicSaleWindowStatus: parseProductPublicSaleWindowStatus(body.publicSaleWindowStatus),
+  };
+
+  if (body.publicSaleStartsAt !== undefined) {
+    result.publicSaleStartsAt = body.publicSaleStartsAt === null ? null : parseString(body.publicSaleStartsAt, 'publicSaleStartsAt');
+  }
+
+  if (body.publicSaleEndsAt !== undefined) {
+    result.publicSaleEndsAt = body.publicSaleEndsAt === null ? null : parseString(body.publicSaleEndsAt, 'publicSaleEndsAt');
+  }
+
+  if (body.reason !== undefined) {
+    result.reason = parseRequiredString(body.reason, 'reason');
   }
 
   return result;
@@ -658,6 +715,13 @@ function parseItemType(value: unknown): ProductItemType {
   }
 
   return value as ProductItemType;
+}
+
+function parseProductPublicSaleWindowStatus(value: unknown): ProductPublicSaleWindowStatus {
+  if (typeof value !== 'string' || !PRODUCT_PUBLIC_SALE_WINDOW_STATUSES.includes(value as ProductPublicSaleWindowStatus)) {
+    throw new ValidationError('publicSaleWindowStatus must be DRAFT, APPROVED, or CANCELLED');
+  }
+  return value as ProductPublicSaleWindowStatus;
 }
 
 function parseSaleStatus(value: unknown): ProductSaleStatus {
