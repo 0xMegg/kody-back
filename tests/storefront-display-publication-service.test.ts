@@ -3,9 +3,25 @@ import { describe, expect, it } from 'vitest';
 import {
   DisplayPublicationService,
   type HomepageLayoutDraft,
+  type StorefrontProductSummary,
 } from '@/application/storefront/display-publication-service.js';
 
 const service = new DisplayPublicationService();
+const NOW = new Date('2026-07-01T00:00:00.000Z');
+const STARTED = new Date('2026-06-30T00:00:00.000Z');
+const ENDS_LATER = new Date('2026-07-02T00:00:00.000Z');
+
+function publicWindow(overrides: Partial<StorefrontProductSummary> = {}): StorefrontProductSummary {
+  return {
+    id: 'product',
+    saleStatus: 'ON_SALE',
+    isDisplayed: true,
+    publicSaleStartsAt: STARTED,
+    publicSaleEndsAt: ENDS_LATER,
+    publicSaleWindowStatus: 'APPROVED',
+    ...overrides,
+  };
+}
 
 function layoutFixture(): HomepageLayoutDraft {
   return {
@@ -21,11 +37,24 @@ function layoutFixture(): HomepageLayoutDraft {
           name: 'B',
           lifecycleState: 'PUBLISHED',
           products: [
-            { sortPosition: 30, product: { id: 'draft', saleStatus: 'DRAFT', isDisplayed: true } },
-            { sortPosition: 10, product: { id: 'on_sale', saleStatus: 'ON_SALE', isDisplayed: true } },
-            { sortPosition: 20, product: { id: 'sold_out', saleStatus: 'SOLD_OUT', isDisplayed: true } },
-            { sortPosition: 40, product: { id: 'hidden', saleStatus: 'ON_SALE', isDisplayed: false } },
-            { sortPosition: 50, product: { id: 'off_sale', saleStatus: 'OFF_SALE', isDisplayed: true } },
+            { sortPosition: 30, product: publicWindow({ id: 'draft', saleStatus: 'DRAFT' }) },
+            { sortPosition: 10, product: publicWindow({ id: 'on_sale' }) },
+            { sortPosition: 20, product: publicWindow({ id: 'sold_out', saleStatus: 'SOLD_OUT' }) },
+            { sortPosition: 20, product: publicWindow({ id: 'same_position_a' }) },
+            { sortPosition: 20, product: publicWindow({ id: 'same_position_b' }) },
+            { sortPosition: 40, product: publicWindow({ id: 'hidden', isDisplayed: false }) },
+            { sortPosition: 50, product: publicWindow({ id: 'off_sale', saleStatus: 'OFF_SALE' }) },
+          ],
+        },
+      },
+      {
+        sortPosition: 10,
+        collection: {
+          id: 'collection_c',
+          name: 'C',
+          lifecycleState: 'PUBLISHED',
+          products: [
+            { sortPosition: 1, product: publicWindow({ id: 'c1' }) },
           ],
         },
       },
@@ -36,7 +65,7 @@ function layoutFixture(): HomepageLayoutDraft {
           name: 'A',
           lifecycleState: 'PUBLISHED',
           products: [
-            { sortPosition: 1, product: { id: 'a1', saleStatus: 'ON_SALE', isDisplayed: true } },
+            { sortPosition: 1, product: publicWindow({ id: 'a1' }) },
           ],
         },
       },
@@ -44,21 +73,52 @@ function layoutFixture(): HomepageLayoutDraft {
   };
 }
 
+const projectionOptions = { now: NOW };
+
 describe('DisplayPublicationService', () => {
-  it('uses product display and sale-status eligibility for public projection', () => {
-    expect(service.isPublicProductEligible({ id: 'p1', saleStatus: 'ON_SALE', isDisplayed: true })).toBe(true);
-    expect(service.isPublicProductEligible({ id: 'p2', saleStatus: 'SOLD_OUT', isDisplayed: true })).toBe(true);
-    expect(service.isPublicProductEligible({ id: 'p3', saleStatus: 'OFF_SALE', isDisplayed: true })).toBe(false);
-    expect(service.isPublicProductEligible({ id: 'p4', saleStatus: 'DRAFT', isDisplayed: true })).toBe(false);
-    expect(service.isPublicProductEligible({ id: 'p5', saleStatus: 'ON_SALE', isDisplayed: false })).toBe(false);
+  it('uses display, sale-status, and Product-level public sale-window eligibility for public projection', () => {
+    expect(service.isPublicProductEligible(publicWindow({ id: 'p1', saleStatus: 'ON_SALE' }), NOW)).toBe(true);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'p2', saleStatus: 'SOLD_OUT' }), NOW)).toBe(true);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'p3', saleStatus: 'OFF_SALE' }), NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'p4', saleStatus: 'DRAFT' }), NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'p5', isDisplayed: false }), NOW)).toBe(false);
+  });
+
+  it('fails closed when Product-level public sale-window fields are missing or not approved', () => {
+    expect(service.isPublicProductEligible({ id: 'missing', saleStatus: 'ON_SALE', isDisplayed: true }, NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'draft_window', publicSaleWindowStatus: 'DRAFT' }), NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'cancelled_window', publicSaleWindowStatus: 'CANCELLED' }), NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'missing_start', publicSaleStartsAt: null }), NOW)).toBe(false);
+    expect(
+      service.isPublicProductEligible(
+        publicWindow({ id: 'bad_end', publicSaleStartsAt: NOW, publicSaleEndsAt: NOW }),
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it('applies homepage time exposure gate with [start,end) boundaries using injected now', () => {
+    expect(service.isPublicProductEligible(publicWindow({ id: 'start_equals_now', publicSaleStartsAt: NOW }), NOW)).toBe(true);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'future', publicSaleStartsAt: new Date('2026-07-01T00:00:01.000Z') }), NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'end_equals_now', publicSaleEndsAt: NOW }), NOW)).toBe(false);
+    expect(service.isPublicProductEligible(publicWindow({ id: 'open_ended', publicSaleEndsAt: null }), NOW)).toBe(true);
   });
 
   it('keeps collection-local product ordering and layout-local collection ordering', () => {
-    const projection = service.previewLayout(layoutFixture());
+    const projection = service.previewLayout(layoutFixture(), projectionOptions);
 
     expect(projection.isPublic).toBe(false);
-    expect(projection.collections.map((collection) => collection.id)).toEqual(['collection_a', 'collection_b']);
-    expect(projection.collections[1]?.productIds).toEqual(['on_sale', 'sold_out']);
+    expect(projection.collections.map((collection) => collection.id)).toEqual([
+      'collection_a',
+      'collection_c',
+      'collection_b',
+    ]);
+    expect(projection.collections[2]?.productIds).toEqual([
+      'on_sale',
+      'same_position_a',
+      'same_position_b',
+      'sold_out',
+    ]);
   });
 
   it('does not project products from draft or archived collections', () => {
@@ -66,17 +126,18 @@ describe('DisplayPublicationService', () => {
     draftCollectionLayout.collections[0]!.collection.lifecycleState = 'DRAFT';
     draftCollectionLayout.collections[1]!.collection.lifecycleState = 'ARCHIVED';
 
-    const projection = service.previewLayout(draftCollectionLayout);
+    const projection = service.previewLayout(draftCollectionLayout, projectionOptions);
 
-    expect(projection.collections[0]?.productIds).toEqual([]);
+    expect(projection.collections[0]?.productIds).toEqual(['a1']);
     expect(projection.collections[1]?.productIds).toEqual([]);
+    expect(projection.collections[2]?.productIds).toEqual([]);
   });
 
   it('does not expose draft previews as public publication', () => {
     const draft = layoutFixture();
 
-    expect(service.previewLayout(draft).collections).toHaveLength(2);
-    expect(service.publicProjection(draft)).toEqual({
+    expect(service.previewLayout(draft, projectionOptions).collections).toHaveLength(3);
+    expect(service.publicProjection(draft, projectionOptions)).toEqual({
       layoutId: 'layout_draft',
       version: 3,
       state: 'DRAFT',
@@ -141,5 +202,38 @@ describe('DisplayPublicationService', () => {
     });
     expect(result.audit.beforeJson).toMatchObject({ layoutId: 'layout_current', version: 5 });
     expect(result.audit.afterJson).toMatchObject({ layoutId: 'layout_previous', version: 6 });
+  });
+
+  it('does not read ProductVariant saleStartAt or saleEndAt for homepage projection', () => {
+    const productWithVariantOnlyTrap = new Proxy(
+      publicWindow({ id: 'variant_trap' }),
+      {
+        get(target, property, receiver) {
+          if (property === 'saleStartAt' || property === 'saleEndAt') {
+            throw new Error(`forbidden variant homepage read: ${String(property)}`);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const layout: HomepageLayoutDraft = {
+      id: 'layout_variant_trap',
+      version: 1,
+      state: 'PUBLISHED',
+      collections: [
+        {
+          sortPosition: 1,
+          collection: {
+            id: 'collection_variant_trap',
+            name: 'Variant trap',
+            lifecycleState: 'PUBLISHED',
+            products: [{ sortPosition: 1, product: productWithVariantOnlyTrap }],
+          },
+        },
+      ],
+    };
+
+    expect(() => service.previewLayout(layout, projectionOptions)).not.toThrow();
+    expect(service.publicProjection(layout, projectionOptions).collections[0]?.productIds).toEqual(['variant_trap']);
   });
 });
