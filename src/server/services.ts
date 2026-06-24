@@ -17,6 +17,7 @@ import { ProductAssetService } from '@/application/product/product-asset-service
 import { PaymentService } from '@/application/payment/payment-service.js';
 import { ShipmentService } from '@/application/shipment/shipment-service.js';
 import { ActionLogWriter } from '@/application/shared/action-log-writer.js';
+import { CalendarEventProjectionService } from '@/application/storefront/calendar-event-projection-service.js';
 import type { ServerConfig } from './config.js';
 
 export interface ServerServices {
@@ -33,6 +34,7 @@ export interface ServerServices {
   productAssets: ProductAssetService;
   payments: PaymentService;
   shipments: ShipmentService;
+  calendarEvents: CalendarEventProjectionService;
 }
 
 export function buildServerServices(
@@ -77,5 +79,6 @@ export function buildServerServices(
     }),
     payments: new PaymentService(prisma as never, actionLogWriter),
     shipments: new ShipmentService(prisma as never, actionLogWriter),
+    calendarEvents: new CalendarEventProjectionService(),
   };
 }
