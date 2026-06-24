@@ -35,6 +35,12 @@ export type ProductItemType =
 
 export type ProductSaleStatus = 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT';
 
+export type DisplayLifecycleState = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+
+export type CalendarSourceType = 'PRODUCT_SALE_WINDOW';
+
+export type CalendarProjectionStatus = 'DRAFT' | 'PUBLISHED' | 'CANCELLED';
+
 export type ProductPriceStatus =
   | 'CONFIRMED'
   | 'MISSING'
