@@ -41,6 +41,8 @@ export type CalendarSourceType = 'PRODUCT_SALE_WINDOW';
 
 export type CalendarProjectionStatus = 'DRAFT' | 'PUBLISHED' | 'CANCELLED';
 
+export type ProductPublicSaleWindowStatus = 'DRAFT' | 'APPROVED' | 'CANCELLED';
+
 export type ProductPriceStatus =
   | 'CONFIRMED'
   | 'MISSING'
