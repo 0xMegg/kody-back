@@ -116,6 +116,12 @@ enum CalendarProjectionStatus {
   CANCELLED
 }
 
+enum ProductPublicSaleWindowStatus {
+  DRAFT
+  APPROVED
+  CANCELLED
+}
+
 enum ProductPriceStatus {
   CONFIRMED
   MISSING
@@ -451,6 +457,12 @@ model Product {
   saleStatus  ProductSaleStatus @default(DRAFT)
   isDisplayed Boolean           @default(false)
 
+  publicSaleStartsAt              DateTime?
+  publicSaleEndsAt                DateTime?
+  publicSaleWindowStatus          ProductPublicSaleWindowStatus @default(DRAFT)
+  publicSaleWindowUpdatedByUserId String?
+  publicSaleWindowUpdatedAt       DateTime?
+
   stockManaged Boolean @default(true)
   stockOnHand  Int     @default(0)
 
@@ -465,12 +477,12 @@ model Product {
   updatedAt           DateTime @updatedAt
 
   // Relations
-  stockMovements   StockMovement[]
-  orderItems       OrderItem[]
-  shipmentItems    ShipmentItem[]
-  externalMappings          ProductExternalMapping[]
-  options                   ProductOption[]
-  variants                  ProductVariant[]
+  stockMovements            StockMovement[]
+  orderItems                OrderItem[]
+  shipmentItems             ShipmentItem[]
+  externalMappings ProductExternalMapping[]
+  options          ProductOption[]
+  variants         ProductVariant[]
   displayCollectionProducts DisplayCollectionProduct[]
 
   @@index([artistId])

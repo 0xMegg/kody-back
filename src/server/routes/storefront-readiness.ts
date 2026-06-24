@@ -33,7 +33,7 @@ export function registerStorefrontReadinessRoutes(server: FastifyInstance): void
         calendar: {
           status: 'READY_ZERO_EVENTS',
           publicEvents: calendarProjection.publicEvents as [],
-          reason: calendarProjection.reason,
+          reason: 'PRODUCT_LEVEL_SALE_WINDOW_NOT_APPROVED',
           variantSaleWindowsUsed: false,
         },
       };
