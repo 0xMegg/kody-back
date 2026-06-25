@@ -154,11 +154,119 @@ export function planG5DProductDuplicatePreview(input: ProductDuplicatePreviewInp
     sourceProductId: normalizeRequired(input.sourceProductId, 'sourceProductId'),
     defaultStatus: 'DRAFT',
     duplicateMarker: 'COPY_PENDING_REVIEW',
+    skuPolicy: 'empty_until_operator_supplies_unique_value',
+    barcodePolicy: 'empty_until_operator_supplies_unique_value',
+    externalIdentityPolicy: 'empty_until_source_bridge_gate',
     imagePolicy: input.copyImagesByReference ? 'copy_by_reference' : 'omit_until_review',
     externalMappingsPolicy: input.copyExternalMappings ? 'blocked_requires_source_bridge_gate' : 'omit',
     stockCounterPolicy: input.copyStockCounters ? 'blocked_never_copy_stock_counters' : 'reset_to_zero',
+    publicSaleAndPublicationPolicy: 'not_copied',
+    sourceOwnershipPolicy: 'not_copied',
     writeAllowed: false,
   } as const;
+}
+
+export type G5DBulkProductWriteAction =
+  | { kind: 'sale_status'; saleStatus: 'ON_SALE' | 'OFF_SALE' | 'SOLD_OUT' | 'DRAFT' }
+  | { kind: 'sale_period'; saleStartAt: string | null; saleEndAt: string | null }
+  | { kind: 'visibility'; hidden: boolean };
+
+export interface G5DBulkProductPreStateGuard {
+  productId: string;
+  updatedAt?: string | null;
+  preStateHash?: string | null;
+}
+
+export interface G5DBulkProductWritePreviewInput {
+  selectionMode: 'explicit_ids' | 'filter';
+  productIds: readonly string[];
+  action: G5DBulkProductWriteAction;
+  preState: readonly G5DBulkProductPreStateGuard[];
+  idempotencyKey?: string | null;
+}
+
+export interface G5DBulkProductWritePreview {
+  selectionMode: 'explicit_ids';
+  requestedProductIds: string[];
+  resolvedProductIds: string[];
+  action: G5DBulkProductWriteAction;
+  previewLimit: 100;
+  runtimeWriteLimit: 50;
+  staleRowGuard: 'updatedAt_or_preStateHash_required_per_product';
+  idempotency: {
+    scope: 'G5-D:bulk-product-write';
+    key: string;
+    ttlHours: 24;
+    payloadHashSource: string;
+    keyReusePolicy: 'same_key_different_payload_hash_reject_as_conflict';
+  };
+  runtimeBlockedReasons: string[];
+  partialFailureMode: 'validate_all_before_write_no_partial_success_in_first_slice';
+  auditPayload: 'before_after_per_product_required_for_runtime_gate';
+  openEndedFilterWriteAllowed: false;
+  runtimeWriteAllowed: false;
+}
+
+export function planG5DBulkProductWritePreview(input: G5DBulkProductWritePreviewInput): G5DBulkProductWritePreview {
+  if (input.selectionMode !== 'explicit_ids') {
+    throw new Error('G5-D first runtime gate allows explicit product IDs only; filter writes are forbidden');
+  }
+
+  const requestedProductIds = normalizeUniqueProductIds(input.productIds);
+  const payloadProductIds = [...requestedProductIds].sort(asciiCompare);
+  if (requestedProductIds.length > 100) {
+    throw new Error('G5-D preview cannot include more than 100 explicit product IDs');
+  }
+  const action = normalizeG5DBulkAction(input.action);
+  const idempotencyKey = normalizeRequired(input.idempotencyKey ?? '', 'idempotencyKey');
+
+  const guardByProductId = new Map(input.preState.map((guard) => [normalizeRequired(guard.productId, 'preState.productId'), guard]));
+  const missingGuards = requestedProductIds.filter((productId) => {
+    const guard = guardByProductId.get(productId);
+    return !guard || (!normalizeOptional(guard.updatedAt) && !normalizeOptional(guard.preStateHash));
+  });
+
+  if (missingGuards.length > 0) {
+    throw new Error(`G5-D stale-row guard missing for product IDs: ${missingGuards.join(', ')}`);
+  }
+
+  return {
+    selectionMode: 'explicit_ids',
+    requestedProductIds,
+    // Source-only preview has no DB resolver; runtime gates may later differ if IDs are reloaded from the DB.
+    resolvedProductIds: requestedProductIds,
+    action,
+    previewLimit: 100,
+    runtimeWriteLimit: 50,
+    staleRowGuard: 'updatedAt_or_preStateHash_required_per_product',
+    idempotency: {
+      scope: 'G5-D:bulk-product-write',
+      key: idempotencyKey,
+      ttlHours: 24,
+      keyReusePolicy: 'same_key_different_payload_hash_reject_as_conflict',
+      // Canonical source for the future runtime idempotency digest; the runtime gate must persist+compare it.
+      payloadHashSource: stablePayloadHashSource({
+        action,
+        productIds: payloadProductIds,
+        preState: payloadProductIds.map((productId) => {
+          const guard = guardByProductId.get(productId);
+          return {
+            productId,
+            updatedAt: normalizeOptional(guard?.updatedAt),
+            preStateHash: normalizeOptional(guard?.preStateHash),
+          };
+        }),
+      }),
+    },
+    runtimeBlockedReasons: [
+      'source-only preview does not execute product writes',
+      ...(requestedProductIds.length > 50 ? ['resolved product count exceeds first runtime write limit of 50'] : []),
+    ],
+    partialFailureMode: 'validate_all_before_write_no_partial_success_in_first_slice',
+    auditPayload: 'before_after_per_product_required_for_runtime_gate',
+    openEndedFilterWriteAllowed: false,
+    runtimeWriteAllowed: false,
+  };
 }
 
 export interface G5ECateBridgeInput {
@@ -226,4 +334,70 @@ function normalizeOptional(value: string | null | undefined): string | null {
   if (value === undefined || value === null) return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeUniqueProductIds(productIds: readonly string[]): string[] {
+  const normalized = productIds.map((productId) => normalizeRequired(productId, 'productIds[]'));
+  if (normalized.length === 0) throw new Error('G5-D preview requires at least one explicit product ID');
+  return [...new Set(normalized)];
+}
+
+function normalizeG5DBulkAction(action: G5DBulkProductWriteAction): G5DBulkProductWriteAction {
+  if (action.kind === 'sale_status') {
+    if (!['ON_SALE', 'OFF_SALE', 'SOLD_OUT', 'DRAFT'].includes(action.saleStatus)) {
+      throw new Error('G5-D saleStatus must be ON_SALE, OFF_SALE, SOLD_OUT, or DRAFT');
+    }
+    return action;
+  }
+
+  if (action.kind === 'sale_period') {
+    const saleStartAt = normalizeOptional(action.saleStartAt);
+    const saleEndAt = normalizeOptional(action.saleEndAt);
+    validateIsoInstant(saleStartAt, 'saleStartAt');
+    validateIsoInstant(saleEndAt, 'saleEndAt');
+    if (saleStartAt && saleEndAt && Date.parse(saleEndAt) <= Date.parse(saleStartAt)) {
+      throw new Error('G5-D saleEndAt must be after saleStartAt for [start,end) sale periods');
+    }
+
+    return {
+      kind: 'sale_period',
+      saleStartAt,
+      saleEndAt,
+    };
+  }
+
+  if (action.kind === 'visibility') {
+    if (typeof action.hidden !== 'boolean') throw new Error('G5-D visibility.hidden must be boolean');
+    return action;
+  }
+
+  throw new Error('G5-D action kind must be sale_status, sale_period, or visibility');
+}
+
+function validateIsoInstant(value: string | null, field: string): void {
+  if (!value) return;
+  if (Number.isNaN(Date.parse(value)) || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    throw new Error(`G5-D ${field} must be an ISO instant`);
+  }
+}
+
+function stablePayloadHashSource(value: unknown): string {
+  return JSON.stringify(sortStable(value));
+}
+
+function sortStable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortStable);
+  if (value === null || typeof value !== 'object') return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => asciiCompare(left, right))
+      .map(([key, nested]) => [key, sortStable(nested)]),
+  );
+}
+
+function asciiCompare(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
