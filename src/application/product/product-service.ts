@@ -21,6 +21,14 @@ import {
   type ProductImportDryRunResult,
   type ProductWorkbookUploadInput,
 } from '@/application/product/product-excel-workflow.js';
+import {
+  assertUniqueNonNullVariantSkusPerProduct,
+  InvalidSaleWindowError,
+  resolveEffectiveVariantIdentity,
+  resolveEffectiveVariantSaleWindow,
+  resolveVariantPriceAuthority,
+  VARIANT_SELLABLE_ACTION_LOG_SCOPE,
+} from '@/domain/product/variant-sellable-contract.js';
 
 const PRODUCT_CATEGORIES: readonly ProductCategory[] = ['ALBUM', 'PHOTOCARD', 'GOODS', 'MAGAZINE', 'SEASON_GREETINGS'];
 const PRODUCT_CATEGORY_MINORS: readonly ProductCategoryMinor[] = ['BOY_GROUP', 'GIRL_GROUP', 'SOLO', 'JAPANESE_ALBUM', 'OST', 'OFFICIAL_GOODS', 'FANDOM_GOODS'];
@@ -85,9 +93,19 @@ export interface ProductVariantSummary {
   optionValueIds: string[];
   sku: string | null;
   barcode: string | null;
+  effectiveSku: string | null;
+  effectiveBarcode: string | null;
+  skuInherited: boolean;
+  barcodeInherited: boolean;
   priceKRW: string;
+  effectivePriceKRW: string;
+  priceAuthority: 'VARIANT' | 'PRODUCT';
   saleStartAt: Date | null;
   saleEndAt: Date | null;
+  effectiveSaleStartAt: Date | null;
+  effectiveSaleEndAt: Date | null;
+  saleWindowInheritedFromProduct: boolean;
+  saleWindowEmpty: boolean;
   position: number;
   createdAt: Date;
   updatedAt: Date;
@@ -617,6 +635,9 @@ export class ProductService {
         : normalizeCategoryReviewStatus(input.categoryReviewStatus);
     const variantInputs =
       input.variants === undefined ? undefined : normalizeVariantWriteInputs(input.variants);
+    if (variantInputs !== undefined) {
+      assertVariantSkuUniqueness(variantInputs);
+    }
 
     if (artistId !== undefined) {
       await this.findArtist(artistId);
@@ -706,9 +727,10 @@ export class ProductService {
       afterJson: {
         ...toProductAuditPayload(created),
         ...(createdVariants !== undefined
-          ? { variants: createdVariants.map(toVariantAuditPayload) }
+          ? { variants: createdVariants.map((variant) => toVariantAuditPayload(variant, created)) }
           : {}),
       },
+      ...(createdVariants !== undefined ? { metadataJson: { scope: VARIANT_SELLABLE_ACTION_LOG_SCOPE } } : {}),
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
     });
@@ -1178,6 +1200,9 @@ export class ProductService {
 
     const variantInputs =
       input.variants === undefined ? undefined : normalizeVariantWriteInputs(input.variants);
+    if (variantInputs !== undefined) {
+      assertVariantSkuUniqueness(variantInputs);
+    }
     const hasFieldChanges = Object.keys(changes).length > 0;
 
     // Absent variants AND no field changes is a no-op: leave everything untouched.
@@ -1197,8 +1222,8 @@ export class ProductService {
       });
       updated = result.product;
       afterVariants = result.reconcile.after;
-      beforeJson.variants = result.reconcile.before.map(toVariantAuditPayload);
-      afterJson.variants = result.reconcile.after.map(toVariantAuditPayload);
+      beforeJson.variants = result.reconcile.before.map((variant) => toVariantAuditPayload(variant, current));
+      afterJson.variants = result.reconcile.after.map((variant) => toVariantAuditPayload(variant, updated));
     } else {
       updated = await this.repository.product.update({
         where: { id: productId },
@@ -1213,6 +1238,7 @@ export class ProductService {
       targetId: productId,
       beforeJson,
       afterJson,
+      ...(variantInputs !== undefined ? { metadataJson: { scope: VARIANT_SELLABLE_ACTION_LOG_SCOPE } } : {}),
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
     });
@@ -2396,7 +2422,7 @@ function toProductSummary(
     detailHtml: product.detailHtml,
     ...(externalMappings !== undefined ? { externalMappings: externalMappings.map(toExternalMappingSummary) } : {}),
     ...(options !== undefined ? { options: options.map(toProductOptionSummary) } : {}),
-    ...(variants !== undefined ? { variants: variants.map(toProductVariantSummary) } : {}),
+    ...(variants !== undefined ? { variants: variants.map((variant) => toProductVariantSummary(variant, product)) } : {}),
     releaseDateText: product.releaseDateText,
     releaseDate: product.releaseDate,
     weightG: product.weightG,
@@ -2448,7 +2474,24 @@ function toProductOptionSummary(option: StoredProductOption): ProductOptionSumma
   };
 }
 
-function toProductVariantSummary(variant: StoredProductVariant): ProductVariantSummary {
+function toProductVariantSummary(variant: StoredProductVariant, product: StoredProduct): ProductVariantSummary {
+  const identity = resolveEffectiveVariantIdentity({
+    variantSku: variant.sku,
+    variantBarcode: variant.barcode,
+    productSku: product.sku,
+    productBarcode: product.barcode,
+  });
+  const variantPriceKRW = decimalToString(variant.priceKRW, 4);
+  const price = resolveVariantPriceAuthority({
+    variantPriceKRW,
+    productPriceKRW: decimalToString(product.priceKRW, 4),
+  });
+  // Product-level public sale windows intentionally are not used here. G5-C-1
+  // keeps variant sellable windows separate from `product_public_sale_window`; in
+  // the current schema there is no distinct product-level variant-sale window, so
+  // the product bound for this contract is open-ended.
+  const saleWindow = resolveReadableVariantSaleWindow(variant);
+
   return {
     id: variant.id,
     productId: variant.productId,
@@ -2456,27 +2499,85 @@ function toProductVariantSummary(variant: StoredProductVariant): ProductVariantS
     optionValueIds: [...variant.optionValueIds],
     sku: variant.sku,
     barcode: variant.barcode,
-    priceKRW: decimalToString(variant.priceKRW, 4),
+    effectiveSku: identity.effectiveSku,
+    effectiveBarcode: identity.effectiveBarcode,
+    skuInherited: identity.skuInherited,
+    barcodeInherited: identity.barcodeInherited,
+    priceKRW: variantPriceKRW,
+    effectivePriceKRW: price.priceKRW,
+    priceAuthority: price.authority,
     saleStartAt: variant.saleStartAt,
     saleEndAt: variant.saleEndAt,
+    effectiveSaleStartAt: saleWindow.startAt,
+    effectiveSaleEndAt: saleWindow.endAt,
+    saleWindowInheritedFromProduct: saleWindow.inheritedFromProduct,
+    saleWindowEmpty: saleWindow.isEmpty,
     position: variant.position,
     createdAt: variant.createdAt,
     updatedAt: variant.updatedAt,
   };
 }
 
-function toVariantAuditPayload(variant: StoredProductVariant): Record<string, unknown> {
+function resolveReadableVariantSaleWindow(variant: StoredProductVariant) {
+  try {
+    return resolveEffectiveVariantSaleWindow({
+      product: { startAt: null, endAt: null },
+      variant: { startAt: variant.saleStartAt, endAt: variant.saleEndAt },
+    });
+  } catch (error) {
+    if (error instanceof InvalidSaleWindowError && error.side === 'variant') {
+      return {
+        startAt: null,
+        endAt: null,
+        inheritedFromProduct: false,
+        isEmpty: true,
+      };
+    }
+    throw error;
+  }
+}
+
+function toVariantAuditPayload(variant: StoredProductVariant, product: StoredProduct): Record<string, unknown> {
+  const summary = toProductVariantSummary(variant, product);
   return {
-    id: variant.id,
-    name: variant.name,
-    optionValueIds: [...variant.optionValueIds],
-    sku: variant.sku,
-    barcode: variant.barcode,
-    priceKRW: decimalToString(variant.priceKRW, 4),
-    saleStartAt: variant.saleStartAt,
-    saleEndAt: variant.saleEndAt,
-    position: variant.position,
+    id: summary.id,
+    name: summary.name,
+    optionValueIds: summary.optionValueIds,
+    sku: summary.sku,
+    barcode: summary.barcode,
+    effectiveSku: summary.effectiveSku,
+    effectiveBarcode: summary.effectiveBarcode,
+    skuInherited: summary.skuInherited,
+    barcodeInherited: summary.barcodeInherited,
+    priceKRW: summary.priceKRW,
+    effectivePriceKRW: summary.effectivePriceKRW,
+    priceAuthority: summary.priceAuthority,
+    saleStartAt: summary.saleStartAt,
+    saleEndAt: summary.saleEndAt,
+    effectiveSaleStartAt: summary.effectiveSaleStartAt,
+    effectiveSaleEndAt: summary.effectiveSaleEndAt,
+    saleWindowInheritedFromProduct: summary.saleWindowInheritedFromProduct,
+    saleWindowEmpty: summary.saleWindowEmpty,
+    position: summary.position,
   };
+}
+
+function assertVariantSkuUniqueness(variants: readonly NormalizedVariant[]): void {
+  try {
+    assertUniqueNonNullVariantSkusPerProduct(variants.map((variant, index) => ({
+      variantId: variant.id ?? `index:${index}`,
+      sku: variant.sku,
+    })));
+  } catch (error) {
+    if (error instanceof Error && error.name === 'DuplicateVariantSkuError') {
+      throw new DomainRuleError(
+        'VALIDATION_ERROR',
+        'variants must not contain duplicate non-null SKU values within the same product',
+        400,
+      );
+    }
+    throw error;
+  }
 }
 
 function toVariantWriteData(variant: NormalizedVariant, index: number): Record<string, unknown> {
@@ -2554,10 +2655,10 @@ function normalizeVariantWriteInput(entry: unknown, index: number): NormalizedVa
       : normalizeStringArray(record.optionValueIds, `variants[${index}].optionValueIds`);
   const saleStartAt = normalizeOptionalIsoDateTime(record.saleStartAt, `variants[${index}].saleStartAt`);
   const saleEndAt = normalizeOptionalIsoDateTime(record.saleEndAt, `variants[${index}].saleEndAt`);
-  if (saleStartAt !== null && saleEndAt !== null && saleStartAt.getTime() > saleEndAt.getTime()) {
+  if (saleStartAt !== null && saleEndAt !== null && saleStartAt.getTime() >= saleEndAt.getTime()) {
     throw new DomainRuleError(
       'VALIDATION_ERROR',
-      `variants[${index}].saleStartAt must be on or before saleEndAt`,
+      `variants[${index}].saleStartAt must be before saleEndAt`,
       400,
     );
   }

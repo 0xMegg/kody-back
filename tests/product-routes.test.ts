@@ -1850,14 +1850,33 @@ describe('product routes', () => {
     expect(body.data.variants[0]).toMatchObject({
       name: 'MUSIC PLANET',
       priceKRW: '17000.0000',
+      effectivePriceKRW: '17000.0000',
+      priceAuthority: 'VARIANT',
       sku: 'V-MP',
+      effectiveSku: 'V-MP',
+      skuInherited: false,
       optionValueIds: ['ov1', 'ov2'],
       position: 0,
     });
     expect(body.data.variants[1]).toMatchObject({
       name: 'KTOWN4U',
       priceKRW: '18000.0000',
+      effectivePriceKRW: '18000.0000',
+      priceAuthority: 'VARIANT',
+      effectiveSku: null,
+      saleWindowInheritedFromProduct: false,
+      saleWindowEmpty: false,
       position: 1,
+    });
+    expect(prisma.actionLog.create.mock.calls[0][0].data).toMatchObject({
+      actionType: 'PRODUCT_CREATE',
+      metadataJson: { scope: 'product_variant_sellable_contract' },
+      afterJson: {
+        variants: [
+          expect.objectContaining({ effectiveSku: 'V-MP', effectivePriceKRW: '17000.0000' }),
+          expect.objectContaining({ effectiveSku: null, effectivePriceKRW: '18000.0000' }),
+        ],
+      },
     });
 
     await server.close();
@@ -1885,13 +1904,13 @@ describe('product routes', () => {
     await server.close();
   });
 
-  it('rejects a variant sale window where saleStartAt is after saleEndAt', async () => {
+  it('rejects a variant sale window where saleStartAt is after or equal to saleEndAt before writing', async () => {
     const actor = buildActor();
     const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
     const server = buildTestServer(prisma);
     await server.ready();
 
-    const response = await server.inject({
+    const afterResponse = await server.inject({
       method: 'POST',
       url: '/products',
       headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
@@ -1904,9 +1923,52 @@ describe('product routes', () => {
         }],
       }),
     });
+    const equalResponse = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        variants: [{
+          name: 'MUSIC PLANET',
+          priceKRW: 17000,
+          saleStartAt: '2026-07-01T00:00:00.000Z',
+          saleEndAt: '2026-07-01T00:00:00.000Z',
+        }],
+      }),
+    });
+
+    expect(afterResponse.statusCode).toBe(400);
+    expect(afterResponse.json().error.message).toContain('saleStartAt must be before saleEndAt');
+    expect(equalResponse.statusCode).toBe(400);
+    expect(equalResponse.json().error.message).toContain('saleStartAt must be before saleEndAt');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.productVariant.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('rejects duplicate non-null variant SKUs within the same product before writing', async () => {
+    const actor = buildActor();
+    const prisma = buildPrisma({ actor, artists: [buildStoredArtist()] });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: validCreatePayload({
+        variants: [
+          { name: 'MUSIC PLANET', priceKRW: 17000, sku: 'SKU-DUP' },
+          { name: 'KTOWN4U', priceKRW: 18000, sku: ' SKU-DUP ' },
+        ],
+      }),
+    });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().error.message).toContain('saleStartAt must be on or before saleEndAt');
+    expect(response.json().error.message).toContain('duplicate non-null SKU');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.productVariant.create).not.toHaveBeenCalled();
 
     await server.close();
   });
@@ -1936,7 +1998,7 @@ describe('product routes', () => {
     const actor = buildActor();
     const prisma = buildPrisma({
       actor,
-      products: [buildStoredProduct()],
+      products: [buildStoredProduct({ sku: 'PROD-SKU', barcode: 'PROD-BAR' })],
       productVariants: [
         buildStoredProductVariant({ id: 'variant_b', name: 'KTOWN4U', position: 1, priceKRW: '18000.0000' }),
         buildStoredProductVariant({ id: 'variant_a', name: 'MUSIC PLANET', position: 0, priceKRW: '17000.0000' }),
@@ -1954,6 +2016,52 @@ describe('product routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.data.variants.map((v: { id: string }) => v.id)).toEqual(['variant_a', 'variant_b']);
+    expect(body.data.variants[0]).toMatchObject({
+      effectiveSku: 'PROD-SKU',
+      effectiveBarcode: 'PROD-BAR',
+      skuInherited: true,
+      barcodeInherited: true,
+      effectivePriceKRW: '17000.0000',
+      priceAuthority: 'VARIANT',
+    });
+
+    await server.close();
+  });
+
+  it('projects legacy equal-bound variant sale windows as empty instead of throwing on read', async () => {
+    const actor = buildActor();
+    const equalBound = new Date('2026-07-01T00:00:00.000Z');
+    const prisma = buildPrisma({
+      actor,
+      products: [buildStoredProduct()],
+      productVariants: [
+        buildStoredProductVariant({
+          id: 'variant_equal_bound',
+          saleStartAt: equalBound,
+          saleEndAt: equalBound,
+        }),
+      ],
+    });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/products/${PRODUCT_ID}`,
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.data.variants[0]).toMatchObject({
+      id: 'variant_equal_bound',
+      saleStartAt: equalBound.toISOString(),
+      saleEndAt: equalBound.toISOString(),
+      effectiveSaleStartAt: null,
+      effectiveSaleEndAt: null,
+      saleWindowInheritedFromProduct: false,
+      saleWindowEmpty: true,
+    });
 
     await server.close();
   });
