@@ -65,6 +65,64 @@ export interface ImwebMappedProduct {
   detailHtml: string | null;
 }
 
+export type ImwebVariantImportField = 'sku' | 'barcode' | 'priceKRW' | 'saleStartAt' | 'saleEndAt';
+export type ImwebVariantImportSource = 'imweb' | 'manual_oms' | 'unknown';
+export type ImwebVariantImportDecision =
+  | 'create_from_source'
+  | 'fill_null_source_field'
+  | 'preserve_existing_field'
+  | 'protect_manual_oms_field'
+  | 'no_source_update'
+  | 'mark_stale_source_missing'
+  | 'duplicate_name_conflict';
+
+export interface ImwebVariantImportSourceOption {
+  name: string;
+  sku?: string | null;
+  barcode?: string | null;
+  priceKRW?: string | null;
+  saleStartAt?: string | null;
+  saleEndAt?: string | null;
+}
+
+export interface ExistingImwebVariantProjection {
+  id: string;
+  name: string;
+  sku?: string | null;
+  barcode?: string | null;
+  priceKRW?: string | null;
+  saleStartAt?: string | null;
+  saleEndAt?: string | null;
+  fieldSources?: Partial<Record<ImwebVariantImportField, ImwebVariantImportSource>>;
+}
+
+export interface ImwebVariantImportFieldPlan {
+  field: ImwebVariantImportField;
+  decision: Extract<ImwebVariantImportDecision, 'fill_null_source_field' | 'preserve_existing_field' | 'protect_manual_oms_field'>;
+  incoming: string;
+  existing: string | null;
+}
+
+export interface ImwebVariantImportPlanItem {
+  variantId: string | null;
+  name: string;
+  decision:
+    | Extract<ImwebVariantImportDecision, 'create_from_source' | 'no_source_update' | 'mark_stale_source_missing' | 'duplicate_name_conflict'>
+    | 'update_fields';
+  fieldPlans: ImwebVariantImportFieldPlan[];
+  deleteAllowed: false;
+}
+
+export interface ImwebVariantImportPlan {
+  items: ImwebVariantImportPlanItem[];
+  policy: {
+    fillOnlyNullFields: true;
+    protectManualOmsFields: true;
+    deleteMissingSourceVariants: false;
+    markMissingSourceVariantsStale: true;
+  };
+}
+
 export interface ImwebDryRunItem {
   rowNumber: number;
   status: ImwebDryRunStatus;
@@ -279,6 +337,136 @@ export function dryRunImwebProductRows(
     summary: summarize(items),
     items,
   };
+}
+
+const IMWEB_VARIANT_IMPORT_FIELDS: readonly ImwebVariantImportField[] = ['sku', 'barcode', 'priceKRW', 'saleStartAt', 'saleEndAt'];
+
+export function planImwebVariantReimport(
+  sourceOptions: readonly ImwebVariantImportSourceOption[],
+  existingVariants: readonly ExistingImwebVariantProjection[] = [],
+): ImwebVariantImportPlan {
+  const sourceNameCounts = countNames(sourceOptions.map((option) => option.name));
+  const existingNameCounts = countNames(existingVariants.map((variant) => variant.name));
+  const duplicateSourceNames = new Set([...sourceNameCounts].filter(([, count]) => count > 1).map(([name]) => name));
+  const duplicateExistingNames = new Set([...existingNameCounts].filter(([, count]) => count > 1).map(([name]) => name));
+
+  // Fail fast on ambiguous option names. The G5-C-3 dry-run scaffold should
+  // never pick an arbitrary source/existing row from a duplicate-name group.
+  if (duplicateSourceNames.size > 0 || duplicateExistingNames.size > 0) {
+    return {
+      items: [
+        ...sourceOptions
+          .filter((source) => duplicateSourceNames.has(normalizeImportVariantNameKey(source.name)))
+          .map((source): ImwebVariantImportPlanItem => ({
+            variantId: null,
+            name: source.name,
+            decision: 'duplicate_name_conflict',
+            fieldPlans: [],
+            deleteAllowed: false,
+          })),
+        ...existingVariants
+          .filter((existing) => duplicateExistingNames.has(normalizeImportVariantNameKey(existing.name)))
+          .map((existing): ImwebVariantImportPlanItem => ({
+            variantId: existing.id,
+            name: existing.name,
+            decision: 'duplicate_name_conflict',
+            fieldPlans: [],
+            deleteAllowed: false,
+          })),
+      ],
+      policy: variantImportPolicy(),
+    };
+  }
+
+  const existingByName = new Map(existingVariants.map((variant) => [normalizeImportVariantNameKey(variant.name), variant] as const));
+  const sourceNames = new Set(sourceOptions.map((option) => normalizeImportVariantNameKey(option.name)));
+  const items: ImwebVariantImportPlanItem[] = [];
+
+  for (const source of sourceOptions) {
+    const existing = existingByName.get(normalizeImportVariantNameKey(source.name));
+    if (!existing) {
+      items.push({
+        variantId: null,
+        name: source.name,
+        decision: 'create_from_source',
+        fieldPlans: [],
+        deleteAllowed: false,
+      });
+      continue;
+    }
+
+    const fieldPlans = IMWEB_VARIANT_IMPORT_FIELDS.flatMap((field): ImwebVariantImportFieldPlan[] => {
+      const incoming = normalizeSourceVariantField(source[field]);
+      if (!incoming) return [];
+      const existingValue = normalizeSourceVariantField(existing[field]);
+      const sourceOwner = existing.fieldSources?.[field] ?? 'unknown';
+      // Conservative G5-C-3 rule: a field marked manual_oms is protected even
+      // when currently blank. Filling that blank from source needs a later,
+      // explicit overwrite/ownership policy rather than this dry-run scaffold.
+      if (sourceOwner === 'manual_oms') {
+        return [{ field, decision: 'protect_manual_oms_field', incoming, existing: existingValue }];
+      }
+      if (existingValue === null) {
+        return [{ field, decision: 'fill_null_source_field', incoming, existing: null }];
+      }
+      return [{ field, decision: 'preserve_existing_field', incoming, existing: existingValue }];
+    });
+
+    const hasFillPlan = fieldPlans.some((plan) => plan.decision === 'fill_null_source_field');
+
+    items.push({
+      variantId: existing.id,
+      name: source.name,
+      decision: hasFillPlan ? 'update_fields' : 'no_source_update',
+      fieldPlans,
+      deleteAllowed: false,
+    });
+  }
+
+  for (const existing of existingVariants) {
+    if (!sourceNames.has(normalizeImportVariantNameKey(existing.name))) {
+      items.push({
+        variantId: existing.id,
+        name: existing.name,
+        decision: 'mark_stale_source_missing',
+        fieldPlans: [],
+        deleteAllowed: false,
+      });
+    }
+  }
+
+  return {
+    items,
+    policy: variantImportPolicy(),
+  };
+}
+
+function variantImportPolicy(): ImwebVariantImportPlan['policy'] {
+  return {
+    fillOnlyNullFields: true,
+    protectManualOmsFields: true,
+    deleteMissingSourceVariants: false,
+    markMissingSourceVariantsStale: true,
+  };
+}
+
+function countNames(names: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    const key = normalizeImportVariantNameKey(name);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function normalizeImportVariantNameKey(name: string): string {
+  return name.trim().toLocaleLowerCase('en-US');
+}
+
+function normalizeSourceVariantField(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function readRequiredString(

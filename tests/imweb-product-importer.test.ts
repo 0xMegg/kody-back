@@ -4,6 +4,7 @@ import {
   dryRunImwebProductRows,
   parseImwebProductRow,
   parseReleaseDate,
+  planImwebVariantReimport,
 } from '@/application/product/imweb-product-importer.js';
 
 function validRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -329,5 +330,82 @@ describe('Imweb product dry-run importer', () => {
       value: '6572',
       reason: 'duplicate_in_file',
     });
+  });
+
+  it('plans G5-C-3 Imweb variant reimport as fill-null only and protects manual OMS fields', () => {
+    const plan = planImwebVariantReimport(
+      [
+        { name: 'MUSIC PLANT', sku: 'SRC-MP', barcode: '8800000000001', priceKRW: '18000.0000' },
+        { name: 'KTOWN4U', sku: 'SRC-KTOWN', priceKRW: '19000.0000' },
+        { name: 'MAKESTAR', sku: 'SRC-MAKESTAR' },
+      ],
+      [
+        { id: 'variant_mp', name: 'MUSIC PLANT', sku: null, barcode: 'MANUAL-BARCODE', priceKRW: '17000.0000', fieldSources: { barcode: 'manual_oms', priceKRW: 'manual_oms' } },
+        { id: 'variant_ktown', name: 'KTOWN4U', sku: 'OMS-KTOWN', priceKRW: '18500.0000' },
+        { id: 'variant_stale', name: 'WEVERSE', sku: 'OMS-WEV' },
+      ],
+    );
+
+    expect(plan.policy).toEqual({
+      fillOnlyNullFields: true,
+      protectManualOmsFields: true,
+      deleteMissingSourceVariants: false,
+      markMissingSourceVariantsStale: true,
+    });
+    expect(plan.items).toContainEqual(expect.objectContaining({
+      variantId: 'variant_mp',
+      name: 'MUSIC PLANT',
+      decision: 'update_fields',
+      deleteAllowed: false,
+      fieldPlans: expect.arrayContaining([
+        { field: 'sku', decision: 'fill_null_source_field', incoming: 'SRC-MP', existing: null },
+        { field: 'barcode', decision: 'protect_manual_oms_field', incoming: '8800000000001', existing: 'MANUAL-BARCODE' },
+        { field: 'priceKRW', decision: 'protect_manual_oms_field', incoming: '18000.0000', existing: '17000.0000' },
+      ]),
+    }));
+    expect(plan.items).toContainEqual(expect.objectContaining({
+      variantId: 'variant_ktown',
+      name: 'KTOWN4U',
+      decision: 'no_source_update',
+      deleteAllowed: false,
+      fieldPlans: expect.arrayContaining([
+        { field: 'sku', decision: 'preserve_existing_field', incoming: 'SRC-KTOWN', existing: 'OMS-KTOWN' },
+        { field: 'priceKRW', decision: 'preserve_existing_field', incoming: '19000.0000', existing: '18500.0000' },
+      ]),
+    }));
+    expect(plan.items).toContainEqual(expect.objectContaining({
+      variantId: null,
+      name: 'MAKESTAR',
+      decision: 'create_from_source',
+      deleteAllowed: false,
+    }));
+    expect(plan.items).toContainEqual(expect.objectContaining({
+      variantId: 'variant_stale',
+      name: 'WEVERSE',
+      decision: 'mark_stale_source_missing',
+      deleteAllowed: false,
+    }));
+  });
+
+  it('marks duplicate G5-C-3 variant option names as conflicts instead of choosing a last Map entry', () => {
+    const plan = planImwebVariantReimport(
+      [
+        { name: 'MUSIC PLANT', sku: 'SRC-MP-1' },
+        { name: ' music plant ', sku: 'SRC-MP-2' },
+      ],
+      [
+        { id: 'variant_a', name: 'WEVERSE', sku: 'OMS-A' },
+        { id: 'variant_b', name: 'WEVERSE', sku: 'OMS-B' },
+      ],
+    );
+
+    expect(plan.items).toHaveLength(4);
+    expect(plan.items).toEqual(expect.arrayContaining([
+      { variantId: null, name: 'MUSIC PLANT', decision: 'duplicate_name_conflict', fieldPlans: [], deleteAllowed: false },
+      { variantId: null, name: ' music plant ', decision: 'duplicate_name_conflict', fieldPlans: [], deleteAllowed: false },
+      { variantId: 'variant_a', name: 'WEVERSE', decision: 'duplicate_name_conflict', fieldPlans: [], deleteAllowed: false },
+      { variantId: 'variant_b', name: 'WEVERSE', decision: 'duplicate_name_conflict', fieldPlans: [], deleteAllowed: false },
+    ]));
+    expect(plan.items.every((item) => item.deleteAllowed === false)).toBe(true);
   });
 });
