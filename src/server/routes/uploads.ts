@@ -25,21 +25,26 @@ export function registerUploadRoutes(server: FastifyInstance): void {
     },
   );
 
-  server.get('/uploads/product-detail-images/local/:key', async (request, reply) => {
+  const handleLocalImage = async (request: { params: unknown }, reply: { header: (name: string, value: string) => unknown }) => {
     const key = parseImageKey(request.params);
     const image = await server.services.productAssets.readLocalProductDetailImage(key);
     reply.header('content-type', image.contentType);
     reply.header('cache-control', 'public, max-age=31536000, immutable');
     return image.buffer;
-  });
+  };
 
-  server.get('/uploads/product-detail-images/s3/:key', async (request, reply) => {
+  const handleS3Image = async (request: { params: unknown }, reply: { header: (name: string, value: string) => unknown }) => {
     const key = parseImageKey(request.params);
     const image = await server.services.productAssets.readS3ProductDetailImage(key);
     reply.header('content-type', image.contentType);
     reply.header('cache-control', 'public, max-age=31536000, immutable');
     return image.body;
-  });
+  };
+
+  server.get('/uploads/product-detail-images/local/:key', handleLocalImage);
+  server.get('/uploads/product-detail-images/local/*', handleLocalImage);
+  server.get('/uploads/product-detail-images/s3/:key', handleS3Image);
+  server.get('/uploads/product-detail-images/s3/*', handleS3Image);
 }
 
 function parseUploadBody(body: unknown): UploadBody {
@@ -61,10 +66,14 @@ function parseUploadBody(body: unknown): UploadBody {
 }
 
 function parseImageKey(params: unknown): string {
-  if (!isRecord(params) || typeof params.key !== 'string' || params.key.trim() === '') {
+  if (!isRecord(params)) {
     throw new ValidationError('image key is required');
   }
-  return decodeURIComponent(params.key);
+  const rawKey = typeof params.key === 'string' ? params.key : typeof params['*'] === 'string' ? params['*'] : null;
+  if (!rawKey || rawKey.trim() === '') {
+    throw new ValidationError('image key is required');
+  }
+  return decodeURIComponent(rawKey);
 }
 
 function parseRequiredString(value: unknown, field: string): string {

@@ -77,15 +77,23 @@ describe('upload routes', () => {
     };
     await server.ready();
 
-    const response = await server.inject({
+    const encodedResponse = await server.inject({
       method: 'GET',
       url: `/uploads/product-detail-images/s3/${encodeURIComponent('products/product_1/image.png')}`,
     });
+    expect(encodedResponse.statusCode).toBe(200);
+    expect(encodedResponse.headers['content-type']).toBe('image/png');
+    expect(encodedResponse.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    expect(encodedResponse.body).toBe(imageBytes.toString());
 
-    expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toBe('image/png');
-    expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
-    expect(response.body).toBe(imageBytes.toString());
+    const rawSlashResponse = await server.inject({
+      method: 'GET',
+      url: '/uploads/product-detail-images/s3/products/product_1/image.png',
+    });
+
+    expect(rawSlashResponse.statusCode).toBe(200);
+    expect(rawSlashResponse.headers['content-type']).toBe('image/png');
+    expect(rawSlashResponse.body).toBe(imageBytes.toString());
 
     await server.close();
   });
