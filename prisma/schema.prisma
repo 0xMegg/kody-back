@@ -438,6 +438,16 @@ model Product {
   categoryMappingSource CategoryMappingSource @default(EXACT)
   sourceCategoryCodes   String[]              @default([])
 
+  categoryArtist                 String?
+  categoryArtistDetail           String?
+  categoryType                   String?
+  categoryTypeDetail             String?
+  categoryArtistCandidates       String[] @default([])
+  categoryArtistDetailCandidates String[] @default([])
+  categoryTypeCandidates         String[] @default([])
+  categoryTypeDetailCandidates   String[] @default([])
+  categoryProjectionMeta         Json?
+
   name         String
   labelName    String?
   thumbnailUrl String?
@@ -490,6 +500,10 @@ model Product {
   @@index([categoryMinor])
   @@index([itemType])
   @@index([categoryMappingSource])
+  @@index([categoryArtist])
+  @@index([categoryArtistDetail])
+  @@index([categoryType])
+  @@index([categoryTypeDetail])
   @@index([sku])
   @@index([barcode])
   @@index([saleStatus])

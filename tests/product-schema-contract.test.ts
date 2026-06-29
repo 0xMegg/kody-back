@@ -18,6 +18,13 @@ const taxonomyMigrationSql = readFileSync(
   ),
   'utf8',
 );
+const categoryProjectionMigrationSql = readFileSync(
+  resolve(
+    process.cwd(),
+    'prisma/migrations/20260629024500_product_category_projection_g2b/migration.sql',
+  ),
+  'utf8',
+);
 
 function modelBlock(name: string): string {
   const match = schema.match(new RegExp(`model ${name} \\{[\\s\\S]*?\\n\\}`));
@@ -32,7 +39,7 @@ describe('Product schema contract', () => {
 
     expect(product).not.toContain('sourceSystem');
     expect(product).not.toContain('externalProductId');
-    expect(product).toContain('externalMappings ProductExternalMapping[]');
+    expect(product).toMatch(/^\s+externalMappings\s+ProductExternalMapping\[\]/m);
 
     expect(mapping).toContain('sourceSystem      SourceSystem');
     expect(mapping).toContain('externalProductId String');
@@ -97,6 +104,38 @@ describe('Product schema contract', () => {
     expect(taxonomyMigrationSql).not.toContain('DROP VALUE');
   });
 
+  it('adds G2b category projection storage additively without first-wins collapse', () => {
+    const product = modelBlock('Product');
+
+    expect(product).toMatch(/^\s+categoryArtist\s+String\?/m);
+    expect(product).toMatch(/^\s+categoryArtistDetail\s+String\?/m);
+    expect(product).toMatch(/^\s+categoryType\s+String\?/m);
+    expect(product).toMatch(/^\s+categoryTypeDetail\s+String\?/m);
+    expect(product).toMatch(/^\s+categoryArtistCandidates\s+String\[\]\s+@default\(\[\]\)/m);
+    expect(product).toMatch(/^\s+categoryArtistDetailCandidates\s+String\[\]\s+@default\(\[\]\)/m);
+    expect(product).toMatch(/^\s+categoryTypeCandidates\s+String\[\]\s+@default\(\[\]\)/m);
+    expect(product).toMatch(/^\s+categoryTypeDetailCandidates\s+String\[\]\s+@default\(\[\]\)/m);
+    expect(product).toMatch(/^\s+categoryProjectionMeta\s+Json\?/m);
+
+    expect(product).toContain('@@index([categoryArtist])');
+    expect(product).toContain('@@index([categoryArtistDetail])');
+    expect(product).toContain('@@index([categoryType])');
+    expect(product).toContain('@@index([categoryTypeDetail])');
+
+    expect(product).toContain('category              ProductCategory?');
+    expect(product).toContain('categoryMinor         ProductCategoryMinor?');
+    expect(product).toContain('itemType              ProductItemType?');
+    expect(product).toContain('sourceCategoryCodes   String[]              @default([])');
+
+    expect(categoryProjectionMigrationSql).toContain('ALTER TABLE "Product" ADD COLUMN "categoryArtist" TEXT');
+    expect(categoryProjectionMigrationSql).toContain('ALTER TABLE "Product" ADD COLUMN "categoryTypeDetailCandidates" TEXT[] DEFAULT ARRAY[]::TEXT[]');
+    expect(categoryProjectionMigrationSql).toContain('ALTER TABLE "Product" ADD COLUMN "categoryProjectionMeta" JSONB');
+    expect(categoryProjectionMigrationSql).toContain('CREATE INDEX "Product_categoryTypeDetail_idx"');
+    expect(categoryProjectionMigrationSql).not.toMatch(/^\s*UPDATE\s+"Product"/m);
+    expect(categoryProjectionMigrationSql).not.toMatch(/^\s*DELETE\s+FROM\s+"Product"/m);
+    expect(categoryProjectionMigrationSql).not.toMatch(/^\s*DROP\s+/m);
+  });
+
   it('adds approved import, option, and KODY product sequence models without variant stock semantics', () => {
     const option = modelBlock('ProductOption');
     const optionValue = modelBlock('ProductOptionValue');
@@ -120,7 +159,7 @@ describe('Product schema contract', () => {
     const variant = modelBlock('ProductVariant');
     const product = modelBlock('Product');
 
-    expect(product).toContain('variants         ProductVariant[]');
+    expect(product).toMatch(/^\s+variants\s+ProductVariant\[\]/m);
     expect(variant).toContain(
       'product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)',
     );
@@ -145,9 +184,9 @@ describe('Product schema contract', () => {
     const shipmentItem = modelBlock('ShipmentItem');
     const stockMovement = modelBlock('StockMovement');
 
-    expect(orderItem).toContain('product       Product        @relation(fields: [productId], references: [id])');
-    expect(shipmentItem).toContain('product   Product   @relation(fields: [productId], references: [id])');
-    expect(stockMovement).toContain('product   Product @relation(fields: [productId], references: [id])');
+    expect(orderItem).toMatch(/^\s+product\s+Product\s+@relation\(fields: \[productId\], references: \[id\]\)/m);
+    expect(shipmentItem).toMatch(/^\s+product\s+Product\s+@relation\(fields: \[productId\], references: \[id\]\)/m);
+    expect(stockMovement).toMatch(/^\s+product\s+Product\s+@relation\(fields: \[productId\], references: \[id\]\)/m);
 
     // A-1 keeps variant stock/ledger authority out of order/shipment/stock tables.
     expect(orderItem).not.toContain('variantId');
