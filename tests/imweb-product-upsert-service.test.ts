@@ -39,6 +39,18 @@ describe('ProductService Imweb import upsert contract', () => {
         saleStatus: 'ON_SALE',
         isDisplayed: true,
         categoryReviewStatus: 'MAPPED',
+        categoryArtist: 'ILLIT',
+        categoryArtistDetail: 'GIRL GROUP',
+        categoryType: null,
+        categoryTypeDetail: 'luckydraw',
+        categoryArtistCandidates: ['ILLIT'],
+        categoryArtistDetailCandidates: ['GIRL GROUP'],
+        categoryTypeCandidates: [],
+        categoryTypeDetailCandidates: ['luckydraw'],
+        categoryProjectionMeta: expect.objectContaining({
+          source: 'imweb-category-bridge-admin-taxonomy-aligned',
+          sourceCategoryCodes: ['CATE70', 'CATE65'],
+        }),
       }),
     });
     const createData = repo.product.create.mock.calls[0][0].data;
@@ -104,6 +116,23 @@ describe('ProductService Imweb import upsert contract', () => {
 
     expect(repo.$transaction).toHaveBeenCalledTimes(1);
     expect(repo.product.update).toHaveBeenCalled();
+    expect(repo.product.update).toHaveBeenCalledWith({
+      where: { id: 'KODY-PROD-000123' },
+      data: expect.objectContaining({
+        categoryArtist: 'ILLIT',
+        categoryArtistDetail: 'GIRL GROUP',
+        categoryType: null,
+        categoryTypeDetail: 'luckydraw',
+        categoryArtistCandidates: ['ILLIT'],
+        categoryArtistDetailCandidates: ['GIRL GROUP'],
+        categoryTypeCandidates: [],
+        categoryTypeDetailCandidates: ['luckydraw'],
+        categoryProjectionMeta: expect.objectContaining({
+          source: 'imweb-category-bridge-admin-taxonomy-aligned',
+          sourceCategoryCodes: ['CATE70', 'CATE65'],
+        }),
+      }),
+    });
     expect(repo.productOptionValue.deleteMany).toHaveBeenCalled();
     expect(repo.productOption.deleteMany).toHaveBeenCalled();
     expect(repo.productExternalMapping.update).toHaveBeenCalled();
@@ -562,7 +591,7 @@ function mappedProduct(overrides: Partial<ImwebMappedProduct> = {}): ImwebMapped
       conflicts: [],
       reviewReasons: [],
       mappedCodes: [],
-      caveat: 'fixture default; write-path currently ignores projection payload',
+      caveat: 'fixture default projection meta for non-Imweb fixture rows',
     },
     saleStatus: '판매중',
     displayStatus: true,
@@ -611,6 +640,18 @@ function baseStoredProduct() {
     categoryMappingSource: 'EXACT' as const,
     sourceCategoryCodes: ['CATE70', 'CATE65'],
     categoryReviewStatus: 'PENDING' as const,
+    categoryArtist: 'ILLIT',
+    categoryArtistDetail: 'GIRL GROUP',
+    categoryType: null,
+    categoryTypeDetail: 'luckydraw',
+    categoryArtistCandidates: ['ILLIT'],
+    categoryArtistDetailCandidates: ['GIRL GROUP'],
+    categoryTypeCandidates: [],
+    categoryTypeDetailCandidates: ['luckydraw'],
+    categoryProjectionMeta: {
+      source: 'imweb-category-bridge-admin-taxonomy-aligned',
+      sourceCategoryCodes: ['CATE70', 'CATE65'],
+    },
     createdAt: NOW,
     updatedAt: NOW,
   };

@@ -163,6 +163,15 @@ export interface ProductSummary {
   categoryMappingSource: CategoryMappingSource;
   sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus;
+  categoryArtist: string | null;
+  categoryArtistDetail: string | null;
+  categoryType: string | null;
+  categoryTypeDetail: string | null;
+  categoryArtistCandidates: string[];
+  categoryArtistDetailCandidates: string[];
+  categoryTypeCandidates: string[];
+  categoryTypeDetailCandidates: string[];
+  categoryProjectionMeta: unknown | null;
   publicSaleStartsAt: Date | null;
   publicSaleEndsAt: Date | null;
   publicSaleWindowStatus: ProductPublicSaleWindowStatus;
@@ -360,6 +369,15 @@ interface StoredProduct {
   categoryMappingSource: CategoryMappingSource;
   sourceCategoryCodes: string[];
   categoryReviewStatus: CategoryReviewStatus;
+  categoryArtist: string | null;
+  categoryArtistDetail: string | null;
+  categoryType: string | null;
+  categoryTypeDetail: string | null;
+  categoryArtistCandidates: string[];
+  categoryArtistDetailCandidates: string[];
+  categoryTypeCandidates: string[];
+  categoryTypeDetailCandidates: string[];
+  categoryProjectionMeta: unknown | null;
   publicSaleStartsAt: Date | null;
   publicSaleEndsAt: Date | null;
   publicSaleWindowStatus: ProductPublicSaleWindowStatus;
@@ -2271,6 +2289,15 @@ function toImwebProductWriteData(mapped: ImwebMappedProduct, current?: StoredPro
     categoryMappingSource: mapped.categoryMappingSource,
     sourceCategoryCodes: mapped.rawCategoryIds,
     categoryReviewStatus: mapped.category === null ? 'NEEDS_REVIEW' : 'MAPPED',
+    categoryArtist: mapped.categoryArtist,
+    categoryArtistDetail: mapped.categoryArtistDetail,
+    categoryType: mapped.categoryType,
+    categoryTypeDetail: mapped.categoryTypeDetail,
+    categoryArtistCandidates: mapped.categoryArtistCandidates,
+    categoryArtistDetailCandidates: mapped.categoryArtistDetailCandidates,
+    categoryTypeCandidates: mapped.categoryTypeCandidates,
+    categoryTypeDetailCandidates: mapped.categoryTypeDetailCandidates,
+    categoryProjectionMeta: mapped.categoryProjectionMeta,
     name: mapped.name,
     labelName: normalizeOptionalString(mapped.artistName) ?? null,
     releaseDateText,
@@ -2446,6 +2473,15 @@ function toProductSummary(
     categoryMappingSource: product.categoryMappingSource,
     sourceCategoryCodes: [...product.sourceCategoryCodes],
     categoryReviewStatus: product.categoryReviewStatus,
+    categoryArtist: product.categoryArtist ?? null,
+    categoryArtistDetail: product.categoryArtistDetail ?? null,
+    categoryType: product.categoryType ?? null,
+    categoryTypeDetail: product.categoryTypeDetail ?? null,
+    categoryArtistCandidates: [...(product.categoryArtistCandidates ?? [])],
+    categoryArtistDetailCandidates: [...(product.categoryArtistDetailCandidates ?? [])],
+    categoryTypeCandidates: [...(product.categoryTypeCandidates ?? [])],
+    categoryTypeDetailCandidates: [...(product.categoryTypeDetailCandidates ?? [])],
+    categoryProjectionMeta: product.categoryProjectionMeta ?? null,
     publicSaleStartsAt: product.publicSaleStartsAt,
     publicSaleEndsAt: product.publicSaleEndsAt,
     publicSaleWindowStatus: product.publicSaleWindowStatus,
@@ -2784,6 +2820,15 @@ function toProductAuditPayload(product: StoredProduct): Record<string, unknown> 
     categoryMappingSource: product.categoryMappingSource,
     sourceCategoryCodes: [...product.sourceCategoryCodes],
     categoryReviewStatus: product.categoryReviewStatus,
+    categoryArtist: product.categoryArtist ?? null,
+    categoryArtistDetail: product.categoryArtistDetail ?? null,
+    categoryType: product.categoryType ?? null,
+    categoryTypeDetail: product.categoryTypeDetail ?? null,
+    categoryArtistCandidates: [...(product.categoryArtistCandidates ?? [])],
+    categoryArtistDetailCandidates: [...(product.categoryArtistDetailCandidates ?? [])],
+    categoryTypeCandidates: [...(product.categoryTypeCandidates ?? [])],
+    categoryTypeDetailCandidates: [...(product.categoryTypeDetailCandidates ?? [])],
+    categoryProjectionMeta: product.categoryProjectionMeta ?? null,
   };
 }
 
