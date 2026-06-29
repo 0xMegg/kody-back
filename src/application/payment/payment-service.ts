@@ -101,9 +101,12 @@ export interface DeletePaymentInput {
 }
 
 export interface UpsertFxRateInput {
+  actorUserId: string;
   date: Date;
   currency: Currency;
   rateToKRW: string;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface ListFxRatesInput {
@@ -163,6 +166,7 @@ interface PaymentRepository {
     findMany(args: {
       where?: Record<string, unknown>;
       orderBy: Array<Record<string, 'asc' | 'desc'>>;
+      take?: number;
     }): Promise<StoredFxRate[]>;
   };
 }
@@ -398,10 +402,34 @@ export class PaymentService {
     const currency = normalizeCurrency(input.currency);
     const rateToKRW = normalizeFxRate(input.rateToKRW);
 
+    const existing = await this.repository.fxRate.findMany({
+      where: { date, currency },
+      orderBy: [{ date: 'desc' }, { currency: 'asc' }],
+      take: 1,
+    });
+    const before = existing[0] ?? null;
+
     const fxRate = await this.repository.fxRate.upsert({
       where: { date_currency: { date, currency } },
       create: { date, currency, rateToKRW },
       update: { rateToKRW },
+    });
+
+    await this.actionLogWriter.write({
+      actorUserId: input.actorUserId,
+      actionType: 'PAYMENT_UPDATE',
+      targetType: 'FxRate',
+      targetId: fxRate.id,
+      beforeJson: before ? toFxRateAuditPayload(before) : undefined,
+      afterJson: toFxRateAuditPayload(fxRate),
+      metadataJson: {
+        scope: 'fx_rate_upsert',
+        date: date.toISOString().slice(0, 10),
+        currency,
+        operation: before ? 'update' : 'create',
+      },
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
     });
 
     return toFxRateSummary(fxRate);
@@ -667,6 +695,15 @@ function toPaymentSummary(payment: StoredPayment): PaymentSummary {
     depositorName: payment.depositorName,
     memo: payment.memo,
     createdAt: payment.createdAt,
+  };
+}
+
+function toFxRateAuditPayload(fxRate: StoredFxRate): Record<string, unknown> {
+  return {
+    id: fxRate.id,
+    date: fxRate.date.toISOString(),
+    currency: fxRate.currency,
+    rateToKRW: fxRate.rateToKRW.toString(),
   };
 }
 

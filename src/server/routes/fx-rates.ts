@@ -2,12 +2,17 @@ import type { FastifyInstance } from 'fastify';
 import type {
   Currency,
   ListFxRatesInput,
-  UpsertFxRateInput,
 } from '@/application/payment/payment-service.js';
 import { successResponse, ValidationError } from '../api/index.js';
-import { requirePermission } from '../auth/guards.js';
+import { requirePermission, type AuthenticatedRequest } from '../auth/guards.js';
 
 const CURRENCIES: readonly Currency[] = ['KRW', 'USD', 'EUR', 'RUB'];
+
+interface FxRateUpsertBody {
+  date: Date;
+  currency: Currency;
+  rateToKRW: string;
+}
 
 export function registerFxRateRoutes(server: FastifyInstance): void {
   server.post(
@@ -15,7 +20,13 @@ export function registerFxRateRoutes(server: FastifyInstance): void {
     { preHandler: requirePermission({ resource: 'payment', action: 'write' }) },
     async (request, reply) => {
       const body = parseUpsertBody(request.body);
-      const result = await server.services.payments.upsertFxRate(body);
+      const authRequest = request as AuthenticatedRequest;
+      const result = await server.services.payments.upsertFxRate({
+        ...body,
+        actorUserId: authRequest.authUser.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
 
       reply.status(201);
       return successResponse(result);
@@ -35,7 +46,7 @@ export function registerFxRateRoutes(server: FastifyInstance): void {
   );
 }
 
-function parseUpsertBody(body: unknown): UpsertFxRateInput {
+function parseUpsertBody(body: unknown): FxRateUpsertBody {
   if (!isRecord(body)) {
     throw new ValidationError('Request body must be an object');
   }

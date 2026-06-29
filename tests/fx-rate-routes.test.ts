@@ -26,7 +26,7 @@ describe('fx-rate routes', () => {
     await server.close();
   });
 
-  it('allows FINANCE to POST /fx-rates and returns 201', async () => {
+  it('allows FINANCE to POST /fx-rates, returns 201, and writes an FxRate audit log', async () => {
     const actor = buildActor({ roles: ['FINANCE'] });
     const prisma = buildPrisma({ actor });
     const server = buildTestServer(prisma);
@@ -41,6 +41,16 @@ describe('fx-rate routes', () => {
     const body = response.json();
     expect(response.statusCode).toBe(201);
     expect(body.ok).toBe(true);
+    expect(prisma.actionLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: actor.id,
+        actionType: 'PAYMENT_UPDATE',
+        targetType: 'FxRate',
+        targetId: 'fx_upserted',
+        afterJson: expect.objectContaining({ currency: 'USD', rateToKRW: '1350.50' }),
+        metadataJson: expect.objectContaining({ scope: 'fx_rate_upsert', currency: 'USD' }),
+      }),
+    });
     await server.close();
   });
 
