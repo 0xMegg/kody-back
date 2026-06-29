@@ -40,6 +40,19 @@ export interface AccountCustomerProductChip {
   categoryMappingSource: CategoryMappingSource;
   categoryReviewStatus: CategoryReviewStatus;
   sourceCategoryCodes: string[];
+  categoryArtist: string | null;
+  categoryArtistDetail: string | null;
+  categoryType: string | null;
+  categoryTypeDetail: string | null;
+  categoryProductType: string | null;
+  categoryProductTypeDetail: string | null;
+  categoryProductGroup: string | null;
+  categoryProductGroupDetail: string | null;
+  categoryArtistCandidates: string[];
+  categoryArtistDetailCandidates: string[];
+  categoryTypeCandidates: string[];
+  categoryTypeDetailCandidates: string[];
+  categoryProjectionMeta: unknown | null;
   thumbnailUrl: string | null;
 }
 
@@ -125,6 +138,15 @@ interface StoredOrderProductLite {
   categoryMappingSource: CategoryMappingSource;
   categoryReviewStatus: CategoryReviewStatus;
   sourceCategoryCodes: string[];
+  categoryArtist?: string | null;
+  categoryArtistDetail?: string | null;
+  categoryType?: string | null;
+  categoryTypeDetail?: string | null;
+  categoryArtistCandidates?: string[] | null;
+  categoryArtistDetailCandidates?: string[] | null;
+  categoryTypeCandidates?: string[] | null;
+  categoryTypeDetailCandidates?: string[] | null;
+  categoryProjectionMeta?: unknown | null;
   thumbnailUrl: string | null;
 }
 
@@ -251,6 +273,15 @@ export class AccountService {
                 categoryMappingSource: true,
                 categoryReviewStatus: true,
                 sourceCategoryCodes: true,
+                categoryArtist: true,
+                categoryArtistDetail: true,
+                categoryType: true,
+                categoryTypeDetail: true,
+                categoryArtistCandidates: true,
+                categoryArtistDetailCandidates: true,
+                categoryTypeCandidates: true,
+                categoryTypeDetailCandidates: true,
+                categoryProjectionMeta: true,
                 thumbnailUrl: true,
               },
             },
@@ -454,7 +485,21 @@ function toCustomerRecentOrder(order: StoredOrderWithItems): AccountCustomerRece
         itemType: product.itemType ?? null,
         categoryMappingSource: product.categoryMappingSource,
         categoryReviewStatus: product.categoryReviewStatus,
-        sourceCategoryCodes: product.sourceCategoryCodes,
+        sourceCategoryCodes: [...(product.sourceCategoryCodes ?? [])],
+        categoryArtist: product.categoryArtist ?? null,
+        categoryArtistDetail: product.categoryArtistDetail ?? null,
+        categoryType: product.categoryType ?? null,
+        categoryTypeDetail: product.categoryTypeDetail ?? null,
+        // Preserve legacy response keys without selecting non-schema Product columns.
+        categoryProductType: null,
+        categoryProductTypeDetail: null,
+        categoryProductGroup: null,
+        categoryProductGroupDetail: null,
+        categoryArtistCandidates: [...(product.categoryArtistCandidates ?? [])],
+        categoryArtistDetailCandidates: [...(product.categoryArtistDetailCandidates ?? [])],
+        categoryTypeCandidates: [...(product.categoryTypeCandidates ?? [])],
+        categoryTypeDetailCandidates: [...(product.categoryTypeDetailCandidates ?? [])],
+        categoryProjectionMeta: product.categoryProjectionMeta ?? null,
         thumbnailUrl: product.thumbnailUrl,
       })),
   };

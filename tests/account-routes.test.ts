@@ -703,8 +703,26 @@ describe('account routes', () => {
           kodyProductId: 'prod_1',
           name: 'KODY Album',
           category: 'ALBUM',
+          categoryArtist: 'ILLIT',
+          categoryArtistDetail: 'GIRL GROUP',
+          categoryType: null,
+          categoryTypeDetail: 'luckydraw',
+          categoryProductType: null,
+          categoryProductTypeDetail: null,
+          categoryProductGroup: null,
+          categoryProductGroupDetail: null,
+          categoryArtistCandidates: ['ILLIT'],
+          categoryArtistDetailCandidates: ['GIRL GROUP'],
+          categoryTypeCandidates: [],
+          categoryTypeDetailCandidates: ['luckydraw'],
+          categoryProjectionMeta: {
+            sourceCategoryCodes: ['CATE70', 'CATE65'],
+            conflicts: [],
+            reviewReasons: [],
+            mappedCodes: [],
+          },
           categoryReviewStatus: 'MAPPED',
-          sourceCategoryCodes: ['imweb-album'],
+          sourceCategoryCodes: ['CATE70', 'CATE65'],
         },
       ],
     });
@@ -712,6 +730,47 @@ describe('account routes', () => {
       expect.objectContaining({
         where: { accountId: account.id },
         take: 10,
+      }),
+    );
+    expect(prisma.order.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          items: expect.objectContaining({
+            select: expect.objectContaining({
+              product: expect.objectContaining({
+                select: expect.objectContaining({
+                  categoryArtist: true,
+                  categoryArtistDetail: true,
+                  categoryType: true,
+                  categoryTypeDetail: true,
+                  categoryArtistCandidates: true,
+                  categoryArtistDetailCandidates: true,
+                  categoryTypeCandidates: true,
+                  categoryTypeDetailCandidates: true,
+                  categoryProjectionMeta: true,
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(prisma.order.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          items: expect.objectContaining({
+            select: expect.objectContaining({
+              product: expect.objectContaining({
+                select: expect.not.objectContaining({
+                  categoryProductType: true,
+                  categoryProductTypeDetail: true,
+                  categoryProductGroup: true,
+                  categoryProductGroupDetail: true,
+                }),
+              }),
+            }),
+          }),
+        }),
       }),
     );
 
@@ -884,7 +943,25 @@ function buildStoredOrder(overrides: Partial<{ id: string; accountId: string }> 
           category: 'ALBUM',
           categoryMappingSource: 'EXACT',
           categoryReviewStatus: 'MAPPED',
-          sourceCategoryCodes: ['imweb-album'],
+          sourceCategoryCodes: ['CATE70', 'CATE65'],
+          categoryArtist: 'ILLIT',
+          categoryArtistDetail: 'GIRL GROUP',
+          categoryType: null,
+          categoryTypeDetail: 'luckydraw',
+          categoryProductType: null,
+          categoryProductTypeDetail: null,
+          categoryProductGroup: null,
+          categoryProductGroupDetail: null,
+          categoryArtistCandidates: ['ILLIT'],
+          categoryArtistDetailCandidates: ['GIRL GROUP'],
+          categoryTypeCandidates: [],
+          categoryTypeDetailCandidates: ['luckydraw'],
+          categoryProjectionMeta: {
+            sourceCategoryCodes: ['CATE70', 'CATE65'],
+            conflicts: [],
+            reviewReasons: [],
+            mappedCodes: [],
+          },
           thumbnailUrl: null,
         },
       },
@@ -934,8 +1011,7 @@ function buildPrisma(input: PrismaInput) {
   const orders = input.orders ?? [];
   const shippingAddresses = input.shippingAddresses ?? [];
 
-  const prisma = {
-    $transaction: vi.fn(async <R>(fn: (tx: unknown) => Promise<R>) => fn(prisma)),
+  const prismaCore = {
     user: {
       findUnique: vi.fn(async (args: { where: { id: string } }) => {
         if (args.where.id === input.actor.id) {
@@ -996,6 +1072,11 @@ function buildPrisma(input: PrismaInput) {
     actionLog: {
       create: vi.fn(async () => ({})),
     },
+  };
+
+  const prisma = {
+    ...prismaCore,
+    $transaction: vi.fn(async <R>(fn: (tx: typeof prismaCore) => Promise<R>) => fn(prismaCore)),
   };
 
   return prisma;
