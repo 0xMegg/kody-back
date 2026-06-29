@@ -1,4 +1,5 @@
 import type { ProductCategory } from '@/domain/shared/types.js';
+import type { TypeDetail } from './category-contract.js';
 
 export type ImwebDryRunStatus = 'create' | 'update' | 'skip' | 'conflict' | 'fail';
 export type ImwebConflictReason = 'existing' | 'duplicate_in_file';
@@ -58,11 +59,51 @@ export interface ImwebMappedProduct {
   optionValues: string[];
   rawCategoryIds: string[];
   categoryMappingSource: ImwebCategoryMappingSource;
+  categoryArtist: string | null;
+  categoryArtistDetail: string | null;
+  categoryType: string | null;
+  categoryTypeDetail: TypeDetail | null;
+  categoryArtistCandidates: string[];
+  categoryArtistDetailCandidates: string[];
+  categoryTypeCandidates: string[];
+  categoryTypeDetailCandidates: TypeDetail[];
+  categoryProjectionMeta: ImwebCategoryProjectionMeta;
   saleStatus: string | null;
   displayStatus: boolean;
   productUrl: string | null;
   thumbnailUrl: string | null;
   detailHtml: string | null;
+}
+
+export interface ImwebCategoryProjectionMeta {
+  source: 'imweb-category-bridge-admin-taxonomy-aligned';
+  version: '2026-06-29';
+  sourceCategoryCodes: string[];
+  unresolvedCodes: string[];
+  conflicts: string[];
+  reviewReasons: string[];
+  mappedCodes: Array<{
+    sourceCode: string;
+    hierarchy: readonly string[];
+    classification: {
+      dimension: 'artist' | 'artistDetail' | 'type' | 'typeDetail';
+      value: string;
+      detail: string;
+    };
+  }>;
+  caveat: string;
+}
+
+export interface ImwebCategoryProjection {
+  artist: string | null;
+  artistDetail: string | null;
+  type: string | null;
+  typeDetail: TypeDetail | null;
+  artistCandidates: string[];
+  artistDetailCandidates: string[];
+  typeCandidates: string[];
+  typeDetailCandidates: TypeDetail[];
+  meta: ImwebCategoryProjectionMeta;
 }
 
 export type ImwebVariantImportField = 'sku' | 'barcode' | 'priceKRW' | 'saleStartAt' | 'saleEndAt';
@@ -169,6 +210,83 @@ const CATEGORY_BY_IMWEB_CATEGORY_ID = new Map(
   APPROVED_IMWEB_CATEGORY_MAPPINGS.map((mapping) => [mapping.code, mapping.category] as const),
 );
 
+const IMWEB_CATEGORY_PROJECTION_BRIDGE_VERSION = '2026-06-29' as const;
+const IMWEB_CATEGORY_PROJECTION_CAVEAT =
+  'Bridge is aligned to screenshot/manual verification, not an admin category export; safe for dry-run projection evidence and future approved writes only.';
+
+const TYPE_DETAIL_BY_ADMIN_LABEL = {
+  MAGAZINE: 'magazine',
+  SG: 'sg',
+  'MEMBERS ONLY': 'members-only',
+  POB: 'pob',
+  'LUCKY DRAW': 'luckydraw',
+  x: 'x',
+  membership: 'membership',
+} as const satisfies Record<string, TypeDetail>;
+
+const IMWEB_CATEGORY_PROJECTION_HIERARCHY_BY_CODE = {
+  CATE46: ['GOODS', 'OFFICIAL GOODS', 'MD'],
+  CATE44: ['ARTIST', 'SOLO'],
+  CATE14: ['ARTIST', 'BOY GROUP', 'ETC'],
+  CATE21: ['ARTIST', 'GIRL GROUP', 'ETC'],
+  CATE64: ['POB'],
+  CATE29: ['MAGAZINE'],
+  CATE51: ['ARTIST', 'JAPANESE ALBUM'],
+  CATE10: ['ARTIST', 'BOY GROUP', 'NCT'],
+  CATE52: ['SG'],
+  CATE4: ['ARTIST', 'BOY GROUP', 'ATEEZ'],
+  CATE11: ['ARTIST', 'BOY GROUP', 'SEVENTEEN'],
+  CATE3: ['ARTIST', 'BOY GROUP', 'Stray Kids'],
+  CATE5: ['ARTIST', 'BOY GROUP', 'BTS'],
+  CATE45: ['GOODS', 'OFFICIAL GOODS', 'LIGHT STICK'],
+  CATE9: ['ARTIST', 'BOY GROUP', 'EXO'],
+  CATE30: ['GOODS', 'OFFICIAL GOODS', 'PHOTOBOOK'],
+  CATE16: ['ARTIST', 'GIRL GROUP', 'aespa'],
+  CATE20: ['ARTIST', 'GIRL GROUP', 'TWICE'],
+  CATE12: ['ARTIST', 'BOY GROUP', 'TOMORROW X TOGETHER'],
+  CATE34: ['ARTIST', 'BOY GROUP', 'SHINee'],
+  CATE8: ['ARTIST', 'BOY GROUP', 'ENHYPEN'],
+  CATE39: ['ARTIST', 'GIRL GROUP', 'IVE'],
+  CATE17: ['ARTIST', 'GIRL GROUP', 'BLACKPINK'],
+  CATE18: ['ARTIST', 'GIRL GROUP', 'ITZY'],
+  CATE65: ['LUCKY DRAW'],
+  CATE19: ['ARTIST', 'GIRL GROUP', 'RED VELVET'],
+  CATE31: ['ARTIST', 'GIRL GROUP', 'LE SSERAFIM'],
+  CATE43: ['ARTIST', 'BOY GROUP', 'ZEROBASEONE'],
+  CATE36: ['ARTIST', 'GIRL GROUP', 'I-DLE'],
+  CATE56: ['ARTIST', 'BOY GROUP', 'BOYNEXTDOOR'],
+  CATE57: ['ARTIST', 'BOY GROUP', 'RIIZE'],
+  CATE62: ['ARTIST', 'GIRL GROUP', 'BABYMONSTER'],
+  CATE42: ['ARTIST', 'BOY GROUP', 'DAY 6'],
+  CATE70: ['ARTIST', 'GIRL GROUP', 'ILLIT'],
+  CATE28: ['ARTIST', 'BOY GROUP', 'THE BOYZ'],
+  CATE58: ['ARTIST', 'BOY GROUP', 'TWS'],
+  CATE61: ['ARTIST', 'BOY GROUP', 'P1harmony'],
+  CATE41: ['ARTIST', 'GIRL GROUP', 'NMIXX'],
+  CATE13: ['ARTIST', 'BOY GROUP', 'TREASURE'],
+  CATE67: ['GOODS', 'OFFICIAL GOODS', 'PHOTO CARD'],
+  CATE32: ['ARTIST', 'GIRL GROUP', 'NEWJEANS'],
+  CATE63: ['ARTIST', 'GIRL GROUP', 'tripleS'],
+  CATE40: ['ARTIST', 'GIRL GROUP', 'KEP1ER'],
+  CATE54: ['ARTIST', 'GIRL GROUP', 'DREAMCATCHER'],
+  CATE66: ['ARTIST', 'BOY GROUP', 'KICKFLIP'],
+  CATE59: ['ARTIST', 'BOY GROUP', 'XDINARY HEROES'],
+  CATE38: ['ARTIST', 'GIRL GROUP', "GIRLS' GENERATION"],
+  CATE55: ['ARTIST', 'OST'],
+  CATE33: ['ARTIST', 'BOY GROUP', 'MONSTA X'],
+  CATE69: ['membership'],
+  CATE37: ['ARTIST', 'GIRL GROUP', 'FROMIS_9'],
+  CATE48: ['ARTIST', 'GIRL GROUP', 'STAYC'],
+  CATE71: ['ARTIST', 'BOY GROUP', 'CORTIS'],
+  CATE50: ['MEMBERS ONLY'],
+  CATE68: ['ARTIST', 'BOY GROUP', 'XLOV'],
+  CATE25: ['GOODS', 'FANDOM GOODS', 'HOLDER'],
+  CATE60: ['ARTIST', 'GIRL GROUP', 'KATSEYE'],
+  CATE24: ['GOODS', 'FANDOM GOODS', 'SANRIO'],
+  CATE53: ['x'],
+  CATE26: ['GOODS', 'FANDOM GOODS', 'COLLECT BOOK'],
+} as const satisfies Record<string, readonly string[]>;
+
 export function parseImwebProductRow(
   row: Record<string, unknown>,
   rowNumber: number,
@@ -180,6 +298,7 @@ export function parseImwebProductRow(
   const name = readRequiredString(row, '상품명', errors);
   const rawCategoryIds = parseCategoryIds(readOptionalString(row, '카테고리ID'));
   const categoryMapping = mapProductCategory(rawCategoryIds, warnings);
+  const categoryProjection = projectImwebCategory(rawCategoryIds);
   const category = categoryMapping.category;
   const price = readImwebPrice(row, '판매가', errors, warnings, { scale: 4 });
   const weightG = readKilogramsAsGrams(row, '무게', errors);
@@ -233,6 +352,15 @@ export function parseImwebProductRow(
       optionValues,
       rawCategoryIds,
       categoryMappingSource: categoryMapping.source,
+      categoryArtist: categoryProjection.artist,
+      categoryArtistDetail: categoryProjection.artistDetail,
+      categoryType: categoryProjection.type,
+      categoryTypeDetail: categoryProjection.typeDetail,
+      categoryArtistCandidates: categoryProjection.artistCandidates,
+      categoryArtistDetailCandidates: categoryProjection.artistDetailCandidates,
+      categoryTypeCandidates: categoryProjection.typeCandidates,
+      categoryTypeDetailCandidates: categoryProjection.typeDetailCandidates,
+      categoryProjectionMeta: categoryProjection.meta,
       saleStatus: readOptionalString(row, '판매상태'),
       displayStatus: parseYn(row, '진열상태', false, warnings),
       productUrl: readOptionalString(row, '상품URL'),
@@ -619,6 +747,111 @@ function parseCategoryIds(value: string | null): string[] {
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+export function projectImwebCategory(categoryIds: readonly string[]): ImwebCategoryProjection {
+  const artist = new Set<string>();
+  const artistDetail = new Set<string>();
+  const type = new Set<string>();
+  const typeDetail = new Set<TypeDetail>();
+  const unresolvedCodes: string[] = [];
+  const mappedCodes: ImwebCategoryProjectionMeta['mappedCodes'] = [];
+
+  for (const categoryId of categoryIds) {
+    const hierarchy = IMWEB_CATEGORY_PROJECTION_HIERARCHY_BY_CODE[categoryId as keyof typeof IMWEB_CATEGORY_PROJECTION_HIERARCHY_BY_CODE];
+    if (!hierarchy) {
+      unresolvedCodes.push(categoryId);
+      continue;
+    }
+
+    const classification = classifyImwebCategoryHierarchy(hierarchy);
+    if (!classification) {
+      unresolvedCodes.push(categoryId);
+      continue;
+    }
+
+    if (classification.dimension === 'artist') {
+      artist.add(classification.value);
+      artistDetail.add(classification.detail);
+    } else if (classification.dimension === 'artistDetail') {
+      artistDetail.add(classification.value);
+    } else if (classification.dimension === 'type') {
+      type.add(classification.value);
+    } else {
+      typeDetail.add(classification.value as TypeDetail);
+    }
+
+    mappedCodes.push({ sourceCode: categoryId, hierarchy, classification });
+  }
+
+  const artistCandidates = [...artist];
+  const artistDetailCandidates = [...artistDetail];
+  const typeCandidates = [...type];
+  const typeDetailCandidates = [...typeDetail];
+  const conflicts = [
+    ...candidateConflict('artist', artistCandidates),
+    ...candidateConflict('artist_detail', artistDetailCandidates),
+    ...candidateConflict('type', typeCandidates),
+    ...candidateConflict('type_detail', typeDetailCandidates),
+  ];
+  const reviewReasons = [...conflicts, ...unresolvedCodes.map((code) => `unresolved_category_code:${code}`)];
+
+  return {
+    artist: singleOrNull(artistCandidates),
+    artistDetail: singleOrNull(artistDetailCandidates),
+    type: singleOrNull(typeCandidates),
+    typeDetail: singleOrNull(typeDetailCandidates),
+    artistCandidates,
+    artistDetailCandidates,
+    typeCandidates,
+    typeDetailCandidates,
+    meta: {
+      source: 'imweb-category-bridge-admin-taxonomy-aligned',
+      version: IMWEB_CATEGORY_PROJECTION_BRIDGE_VERSION,
+      sourceCategoryCodes: [...categoryIds],
+      unresolvedCodes,
+      conflicts,
+      reviewReasons,
+      mappedCodes,
+      caveat: IMWEB_CATEGORY_PROJECTION_CAVEAT,
+    },
+  };
+}
+
+function classifyImwebCategoryHierarchy(hierarchy: readonly string[]): ImwebCategoryProjectionMeta['mappedCodes'][number]['classification'] | null {
+  const [root, detail, value] = hierarchy;
+  if (!root) return null;
+  if (root === 'ARTIST') {
+    if (value) {
+      return { dimension: 'artist', value, detail: detail ?? '' };
+    }
+    if (detail) {
+      return { dimension: 'artistDetail', value: detail, detail };
+    }
+    return null;
+  }
+  if (root === 'GOODS') {
+    if (value) {
+      return { dimension: 'type', value, detail: detail ?? '' };
+    }
+    if (detail) {
+      return { dimension: 'type', value: detail, detail: root };
+    }
+    return null;
+  }
+  const typeDetailValue = TYPE_DETAIL_BY_ADMIN_LABEL[root as keyof typeof TYPE_DETAIL_BY_ADMIN_LABEL];
+  if (typeDetailValue) {
+    return { dimension: 'typeDetail', value: typeDetailValue, detail: root };
+  }
+  return null;
+}
+
+function singleOrNull<T>(values: readonly T[]): T | null {
+  return values.length === 1 ? values[0]! : null;
+}
+
+function candidateConflict(dimension: string, values: readonly string[]): string[] {
+  return values.length > 1 ? [`multiple_${dimension}_values`] : [];
 }
 
 function mapProductCategory(
