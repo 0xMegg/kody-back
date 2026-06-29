@@ -26,11 +26,19 @@ export function registerUploadRoutes(server: FastifyInstance): void {
   );
 
   server.get('/uploads/product-detail-images/local/:key', async (request, reply) => {
-    const key = parseLocalImageKey(request.params);
+    const key = parseImageKey(request.params);
     const image = await server.services.productAssets.readLocalProductDetailImage(key);
     reply.header('content-type', image.contentType);
     reply.header('cache-control', 'public, max-age=31536000, immutable');
     return image.buffer;
+  });
+
+  server.get('/uploads/product-detail-images/s3/:key', async (request, reply) => {
+    const key = parseImageKey(request.params);
+    const image = await server.services.productAssets.readS3ProductDetailImage(key);
+    reply.header('content-type', image.contentType);
+    reply.header('cache-control', 'public, max-age=31536000, immutable');
+    return image.body;
   });
 }
 
@@ -52,7 +60,7 @@ function parseUploadBody(body: unknown): UploadBody {
   return result;
 }
 
-function parseLocalImageKey(params: unknown): string {
+function parseImageKey(params: unknown): string {
   if (!isRecord(params) || typeof params.key !== 'string' || params.key.trim() === '') {
     throw new ValidationError('image key is required');
   }

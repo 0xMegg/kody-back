@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { Readable } from 'node:stream';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { DomainRuleError } from '@/domain/shared/errors.js';
 
 const ALLOWED_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -27,6 +28,11 @@ export interface ProductDetailImageUploadResult {
   contentType: string;
   sizeBytes: number;
   storage: 's3' | 'local';
+}
+
+export interface ProductDetailImageReadResult {
+  body: Readable;
+  contentType: string;
 }
 
 export interface ProductAssetServiceConfig {
@@ -96,12 +102,48 @@ export class ProductAssetService {
   }
 
   async readLocalProductDetailImage(key: string): Promise<{ buffer: Buffer; contentType: string }> {
-    if (!key.startsWith('product-detail/') || key.includes('..')) {
-      throw new DomainRuleError('VALIDATION_ERROR', 'invalid image key', 400);
-    }
+    assertValidProductDetailImageKey(key);
     const buffer = await readFile(join(this.config.uploadDir, key));
     return { buffer, contentType: contentTypeForKey(key) };
   }
+
+  async readS3ProductDetailImage(key: string): Promise<ProductDetailImageReadResult> {
+    assertValidProductDetailImageKey(key);
+    if (!this.s3Client || !this.config.s3Bucket) {
+      throw new DomainRuleError('NOT_FOUND', 'image not found', 404);
+    }
+
+    try {
+      const result = await this.s3Client.send(new GetObjectCommand({
+        Bucket: this.config.s3Bucket,
+        Key: key,
+      }));
+      const contentType = normalizeStoredContentType(result.ContentType, key);
+      if (!isReadable(result.Body)) {
+        throw new DomainRuleError('UPSTREAM_INVALID_RESPONSE', 'image storage returned an invalid response', 502);
+      }
+      return { body: result.Body, contentType };
+    } catch (cause) {
+      if (cause instanceof DomainRuleError) {
+        throw cause;
+      }
+      const error = cause as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 403 || error.$metadata?.httpStatusCode === 404) {
+        throw new DomainRuleError('NOT_FOUND', 'image not found', 404);
+      }
+      throw new DomainRuleError('UPSTREAM_UNAVAILABLE', 'image storage is unavailable', 502);
+    }
+  }
+}
+
+function assertValidProductDetailImageKey(key: string): void {
+  if ((!key.startsWith('product-detail/') && !key.startsWith('products/')) || key.includes('..')) {
+    throw new DomainRuleError('VALIDATION_ERROR', 'invalid image key', 400);
+  }
+}
+
+function isReadable(value: unknown): value is Readable {
+  return value instanceof Readable || (typeof value === 'object' && value !== null && typeof (value as { pipe?: unknown }).pipe === 'function');
 }
 
 function normalizeContentType(value: unknown): string {
@@ -145,9 +187,16 @@ function contentTypeForKey(key: string): string {
   return 'application/octet-stream';
 }
 
+function normalizeStoredContentType(value: string | undefined, key: string): string {
+  if (value && ALLOWED_CONTENT_TYPES.has(value)) {
+    return value;
+  }
+  return contentTypeForKey(key);
+}
+
 function buildS3PublicUrl(input: { bucket: string; region?: string; publicBaseUrl?: string; key: string }): string {
   if (input.publicBaseUrl) {
-    return `${input.publicBaseUrl.replace(/\/$/, '')}/${input.key}`;
+    return `${input.publicBaseUrl.replace(/\/$/, '')}/${encodeURIComponent(input.key)}`;
   }
   return `https://${input.bucket}.s3.${input.region}.amazonaws.com/${input.key}`;
 }

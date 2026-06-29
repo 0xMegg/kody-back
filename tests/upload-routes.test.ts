@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { issueAccessToken } from '@/domain/auth/tokens.js';
 import type { Role } from '@/domain/shared/types.js';
@@ -62,6 +63,29 @@ describe('upload routes', () => {
     expect(response.statusCode).toBe(400);
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe('VALIDATION_ERROR');
+
+    await server.close();
+  });
+
+  it('streams private S3 product detail images through the backend route', async () => {
+    const actor = buildActor();
+    const server = buildTestServer(buildPrisma(actor) as unknown as Partial<PrismaClient>);
+    const imageBytes = Buffer.from('s3-image');
+    server.services.productAssets.readS3ProductDetailImage = async (key: string) => {
+      expect(key).toBe('products/product_1/image.png');
+      return { body: Readable.from(imageBytes), contentType: 'image/png' };
+    };
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/uploads/product-detail-images/s3/${encodeURIComponent('products/product_1/image.png')}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('image/png');
+    expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    expect(response.body).toBe(imageBytes.toString());
 
     await server.close();
   });
