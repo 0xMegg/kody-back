@@ -5,6 +5,7 @@ import {
   parseImwebProductRow,
   parseReleaseDate,
   planImwebVariantReimport,
+  projectImwebCategory,
 } from '@/application/product/imweb-product-importer.js';
 
 function validRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -78,6 +79,49 @@ describe('Imweb product dry-run importer', () => {
       releaseDate: new Date('2026-04-30T00:00:00.000Z'),
     });
     expect(result.mapped?.rawCategoryIds).toEqual(['CATE70', 'CATE65']);
+  });
+
+  it('projects Imweb CATE bridge values into G2b four-field category payloads', () => {
+    const result = parseImwebProductRow(validRow({ 카테고리ID: 'CATE70,CATE65' }), 2);
+
+    expect(result.status).toBe('create');
+    expect(result.errors).toEqual([]);
+    expect(result.mapped).toMatchObject({
+      categoryArtist: 'ILLIT',
+      categoryArtistDetail: 'GIRL GROUP',
+      categoryType: null,
+      categoryTypeDetail: 'luckydraw',
+      categoryArtistCandidates: ['ILLIT'],
+      categoryArtistDetailCandidates: ['GIRL GROUP'],
+      categoryTypeCandidates: [],
+      categoryTypeDetailCandidates: ['luckydraw'],
+    });
+    expect(result.mapped?.categoryProjectionMeta).toMatchObject({
+      source: 'imweb-category-bridge-admin-taxonomy-aligned',
+      version: '2026-06-29',
+      sourceCategoryCodes: ['CATE70', 'CATE65'],
+      unresolvedCodes: [],
+      conflicts: [],
+      reviewReasons: [],
+    });
+  });
+
+  it('keeps conflicting multi-CATE dimensions as candidates without first-wins scalar assignment', () => {
+    const projection = projectImwebCategory(['CATE52', 'CATE64']);
+
+    expect(projection.typeDetail).toBeNull();
+    expect(projection.typeDetailCandidates).toEqual(['sg', 'pob']);
+    expect(projection.meta.conflicts).toContain('multiple_type_detail_values');
+    expect(projection.meta.reviewReasons).toContain('multiple_type_detail_values');
+  });
+
+  it('records unresolved category codes in projection meta without inferring from SKU or product name', () => {
+    const projection = projectImwebCategory(['CATE53', 'CATE999']);
+
+    expect(projection.typeDetail).toBe('x');
+    expect(projection.meta.unresolvedCodes).toEqual(['CATE999']);
+    expect(projection.meta.reviewReasons).toContain('unresolved_category_code:CATE999');
+    expect(projection.meta.mappedCodes.map((item) => item.sourceCode)).toEqual(['CATE53']);
   });
 
   it('preserves approved Imweb manufacturer-column remapping as releaseDateText and keeps unsafe dates nullable', () => {
