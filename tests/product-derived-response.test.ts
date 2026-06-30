@@ -88,8 +88,8 @@ describe('ProductService derived response fields', () => {
   });
 
   describe('priceUSD derivation', () => {
-    it('rounds half-up to an integer USD amount using the latest positive USD rate', async () => {
-      // 17440 / 1360 = 12.82... -> 13
+    it('rounds half-up to a 2-decimal USD amount using the latest positive USD rate', async () => {
+      // 17440 / 1360 = 12.8235... -> 12.82
       const repo = buildRepository({
         product: storedProduct({ priceKRW: '17440.0000' }),
         rateToKRW: '1360.0000',
@@ -98,33 +98,33 @@ describe('ProductService derived response fields', () => {
 
       const result = await service.getProduct('KODY-PROD-000001');
 
-      expect(result.priceUSD).toBe(13);
+      expect(result.priceUSD).toBe(12.82);
     });
 
-    it('rounds an exact .5 ratio up (round-half-up)', async () => {
-      // 1500 / 1000 = 1.5 -> 2
+    it('rounds an exact third-decimal .005 value up (round-half-up)', async () => {
+      // 1234.5 / 100 = 12.345 -> 12.35
       const repo = buildRepository({
-        product: storedProduct({ priceKRW: '1500.0000' }),
-        rateToKRW: '1000.0000',
+        product: storedProduct({ priceKRW: '1234.5000' }),
+        rateToKRW: '100.0000',
       });
       const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
 
       const result = await service.getProduct('KODY-PROD-000001');
 
-      expect(result.priceUSD).toBe(2);
+      expect(result.priceUSD).toBe(12.35);
     });
 
-    it('rounds a just-below-.5 ratio down', async () => {
-      // 1499 / 1000 = 1.499 -> 1
+    it('rounds a just-below third-decimal .005 value down', async () => {
+      // 1234.4 / 100 = 12.344 -> 12.34
       const repo = buildRepository({
-        product: storedProduct({ priceKRW: '1499.0000' }),
-        rateToKRW: '1000.0000',
+        product: storedProduct({ priceKRW: '1234.4000' }),
+        rateToKRW: '100.0000',
       });
       const service = new ProductService(repo, new ActionLogWriter(repo.actionLog));
 
       const result = await service.getProduct('KODY-PROD-000001');
 
-      expect(result.priceUSD).toBe(1);
+      expect(result.priceUSD).toBe(12.34);
     });
 
     it('returns 0 USD for a zero KRW price', async () => {

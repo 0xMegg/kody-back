@@ -2413,7 +2413,7 @@ function scaledDecimalToBigInt(value: string, scale: number): bigint {
 }
 
 /**
- * Convert a scale-4 KRW decimal string into an integer USD amount using the
+ * Convert a scale-4 KRW decimal string into a 2-decimal USD amount using the
  * latest positive USD->KRW rate (also a scale-4 decimal string). Uses BigInt
  * math with round-half-up to avoid JS floating point error. Returns null when
  * no usable rate is supplied.
@@ -2423,9 +2423,9 @@ function deriveUsdPrice(priceKRW: string, usdRateToKRW: string | null): number |
   const rate = scaledDecimalToBigInt(usdRateToKRW, 4);
   if (rate <= 0n) return null;
   const price = scaledDecimalToBigInt(priceKRW, 4);
-  // round-half-up: floor((price / rate) + 1/2) = floor((2*price + rate) / (2*rate))
-  const usd = (2n * price + rate) / (2n * rate);
-  return Number(usd);
+  // round-half-up to cents: floor((price / rate * 100) + 1/2)
+  const usdCents = (2n * price * 100n + rate) / (2n * rate);
+  return Number(usdCents) / 100;
 }
 
 function toProductSummary(
