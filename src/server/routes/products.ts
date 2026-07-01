@@ -71,7 +71,15 @@ export function registerProductRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       assertAnyRole((request as AuthenticatedRequest).authUser.roles, ['ADMIN', 'OPERATIONS', 'FINANCE']);
       const body = parseWorkbookUploadBody(request.body);
-      const result = await server.services.products.dryRunImwebProductWorkbook(body);
+      let result;
+      try {
+        result = await server.services.products.dryRunImwebProductWorkbook(body);
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new ValidationError(error.message);
+        }
+        throw error;
+      }
 
       reply.status(200);
       return successResponse(result);

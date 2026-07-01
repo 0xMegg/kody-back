@@ -1361,6 +1361,32 @@ describe('product routes', () => {
     await server.close();
   });
 
+  it('rejects forbidden workbook extensions through the HTTP dry-run route as validation errors', async () => {
+    const actor = buildActor({ roles: ['OPERATIONS'] });
+    const prisma = buildPrisma({ actor });
+    const server = buildTestServer(prisma);
+    await server.ready();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/products/import/dry-run',
+      headers: { authorization: `Bearer ${issueToken(actor.id, actor.roles)}` },
+      payload: {
+        fileName: 'imweb-products.xlsm',
+        contentBase64: Buffer.from('not a zip file').toString('base64'),
+        sizeBytes: 14,
+      },
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.message).toContain('Only .xlsx uploads are allowed');
+    expect(prisma.product.create).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('ignores hidden write flags on dry-run uploads and never calls product/mapping writes', async () => {
     const actor = buildActor({ roles: ['OPERATIONS'] });
     const prisma = buildPrisma({ actor });
